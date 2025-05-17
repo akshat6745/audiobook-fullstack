@@ -185,40 +185,56 @@ class TTSRequest(BaseModel):
     voice: str = "en-US-ChristopherNeural"  # Default voice
 
 @app.post("/tts")
-async def text_to_speech(request: TTSRequest):
+async def text_to_speech_post(request: TTSRequest = None, text: str = None, voice: str = "en-US-ChristopherNeural"):
     """
-    Convert text to speech using Edge TTS
+    Convert text to speech using Edge TTS and stream binary data directly
+    Accepts either a JSON body or query parameters
+    """
+    return await process_tts_request(request, text, voice)
+
+@app.get("/tts")
+async def text_to_speech_get(text: str, voice: str = "en-US-ChristopherNeural"):
+    """
+    GET endpoint for text-to-speech conversion
+    """
+    return await process_tts_request(None, text, voice)
+
+async def process_tts_request(request: TTSRequest = None, text: str = None, voice: str = "en-US-ChristopherNeural"):
+    """
+    Common processing function for TTS requests
     """
     try:
-        # Create a temporary file to store the audio
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
-            temp_path = temp_file.name
-
-        # Communicate with Edge TTS service
-        communicate = edge_tts.Communicate(request.text, request.voice)
-
-        # Convert text to speech and save to file
-        await communicate.save(temp_path)
-
-        # Read the file into memory
-        with open(temp_path, "rb") as audio_file:
-            audio_data = audio_file.read()
-
-        # Clean up the temporary file
-        os.unlink(temp_path)
-
-        # Create a bytes buffer with the audio data
-        output = io.BytesIO(audio_data)
-
+        # Use request body if provided, otherwise use query parameters
+        if request:
+            text_to_convert = request.text
+            voice_to_use = request.voice
+        else:
+            if not text:
+                raise HTTPException(status_code=400, detail="Text parameter is required if not using JSON body")
+            text_to_convert = text
+            voice_to_use = voice
+            
+        # Stream audio data directly to memory without using temporary files
+        communicate = edge_tts.Communicate(text_to_convert, voice_to_use)
+        
+        # Create an in-memory buffer
+        output = io.BytesIO()
+        
+        # Stream audio data directly to the buffer
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                output.write(chunk["data"])
+        
         # Reset buffer position to the beginning
         output.seek(0)
-
-        # Return the audio file as a streaming response
+        
+        # Return the audio data as a streaming response
         return StreamingResponse(
-            output,
-            media_type="audio/mpeg",
+            output, 
+            media_type="audio/mp3",
             headers={
-                "Content-Disposition": "attachment; filename=speech.mp3"
+                "Content-Disposition": "attachment; filename=speech.mp3",
+                "Cache-Control": "no-cache"
             }
         )
     except Exception as e:

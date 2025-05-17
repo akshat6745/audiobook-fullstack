@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Pressable 
 import { Audio } from 'expo-av';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { fetchAudio } from '../services/api';
+import { fetchAudio, getTtsStreamUrl } from '../services/api';
 import { RootStackParamList } from '../types';
 import { Ionicons } from '@expo/vector-icons';
 import Loading from '../components/Loading';
@@ -59,21 +59,6 @@ const AudioPlayerScreen = () => {
         setLoading(true);
       }
 
-      // Create a new Sound object
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: `http://localhost:8000/tts` },
-        { shouldPlay: false },
-        forCurrent ? onPlaybackStatusUpdate : undefined,
-        true
-      );
-
-      // Store the sound in the appropriate state based on whether it's for current or next paragraph
-      if (forCurrent) {
-        setSound(newSound);
-      } else {
-        setNextSound(newSound);
-      }
-
       // Determine which text to use
       const textToUse = forCurrent ? text : 
         (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) ? 
@@ -84,23 +69,33 @@ const AudioPlayerScreen = () => {
         return;
       }
 
-      // Make the API call with the selected voice
-      const response = await fetchAudio(textToUse || text, selectedVoice);
+      // Get a direct streaming URL with the appropriate parameters
+      const url = getTtsStreamUrl(textToUse || text, selectedVoice);
 
-      // Create a blob URL from the response
-      const url = URL.createObjectURL(response);
+      console.log(`Loading audio from: ${url}`);
 
-      // Load the sound from the blob URL
-      await newSound.loadAsync(
-        { uri: url },
-        { shouldPlay: false }
+      // Create a new Sound object directly from the streaming endpoint
+      // Use method: 'GET' to ensure we're using HTTP GET
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        { 
+          uri: url,
+          headers: {
+            'Accept': 'audio/mp3',
+          }
+        },
+        { shouldPlay: false },
+        forCurrent ? onPlaybackStatusUpdate : undefined
       );
 
       // Set the playback speed
       await newSound.setRateAsync(playbackSpeed, true);
 
+      // Store the sound in the appropriate state based on whether it's for current or next paragraph
       if (forCurrent) {
+        setSound(newSound);
         setError(null);
+      } else {
+        setNextSound(newSound);
       }
     } catch (err) {
       if (forCurrent) {
