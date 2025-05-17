@@ -14,7 +14,7 @@ const ChapterContentScreen = () => {
   const [paragraphs, setParagraphs] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   const route = useRoute<ChapterContentScreenRouteProp>();
   const navigation = useNavigation<ChapterContentScreenNavigationProp>();
   const { novelName, chapterNumber, chapterTitle } = route.params;
@@ -45,6 +45,8 @@ const ChapterContentScreen = () => {
     navigation.navigate('AudioPlayer', {
       text,
       title: `Paragraph ${index + 1}`,
+      paragraphs,
+      paragraphIndex: index
     });
   };
 
@@ -105,4 +107,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default ChapterContentScreen; 
+export default ChapterContentScreen;

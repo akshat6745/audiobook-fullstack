@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal } from 'react-native';
 import { Audio } from 'expo-av';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -8,24 +8,48 @@ import { RootStackParamList } from '../types';
 import { Ionicons } from '@expo/vector-icons';
 import Loading from '../components/Loading';
 import ErrorDisplay from '../components/ErrorDisplay';
+import { DEFAULT_VOICE } from '../utils/config';
 
 type AudioPlayerScreenRouteProp = RouteProp<RootStackParamList, 'AudioPlayer'>;
 type AudioPlayerScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'AudioPlayer'>;
+
+// Voice options
+const VOICE_OPTIONS = [
+  { label: 'Christopher (Male, US)', value: 'en-US-ChristopherNeural' },
+  { label: 'Jenny (Female, US)', value: 'en-US-JennyNeural' },
+  { label: 'Sonia (Female, UK)', value: 'en-GB-SoniaNeural' },
+  { label: 'Ryan (Male, UK)', value: 'en-GB-RyanNeural' },
+];
+
+// Playback speed options
+const SPEED_OPTIONS = [
+  { label: '0.5x', value: 0.5 },
+  { label: '0.75x', value: 0.75 },
+  { label: '1x', value: 1 },
+  { label: '1.25x', value: 1.25 },
+  { label: '1.5x', value: 1.5 },
+  { label: '2x', value: 2 },
+];
 
 const AudioPlayerScreen = () => {
   const [sound, setSound] = useState<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+  const [selectedVoice, setSelectedVoice] = useState(DEFAULT_VOICE);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
+  const [showSpeedDropdown, setShowSpeedDropdown] = useState(false);
+
   const route = useRoute<AudioPlayerScreenRouteProp>();
   const navigation = useNavigation<AudioPlayerScreenNavigationProp>();
-  const { text, title } = route.params;
+  const { text, title, paragraphs = [], paragraphIndex = 0 } = route.params;
+  const [currentParagraphIndex, setCurrentParagraphIndex] = useState(paragraphIndex);
 
   const loadAudio = async () => {
     try {
       setLoading(true);
-      
+
       // Create a new Sound object
       const { sound: newSound } = await Audio.Sound.createAsync(
         { uri: `http://localhost:8000/tts` },
@@ -33,21 +57,24 @@ const AudioPlayerScreen = () => {
         undefined,
         true
       );
-      
+
       setSound(newSound);
-      
-      // Make the API call
-      const response = await fetchAudio(text);
-      
+
+      // Make the API call with the selected voice
+      const response = await fetchAudio(text, selectedVoice);
+
       // Create a blob URL from the response
       const url = URL.createObjectURL(response);
-      
+
       // Load the sound from the blob URL
       await newSound.loadAsync(
         { uri: url },
         { shouldPlay: false }
       );
-      
+
+      // Set the playback speed
+      await newSound.setRateAsync(playbackSpeed, true);
+
       setError(null);
     } catch (err) {
       setError('Failed to load audio. Please try again.');
@@ -62,7 +89,7 @@ const AudioPlayerScreen = () => {
       title: title,
     });
 
-    // Load the audio when the component mounts
+    // Load the audio when the component mounts or when text/voice changes
     loadAudio();
 
     // Cleanup function to unload the sound when the component unmounts
@@ -71,7 +98,7 @@ const AudioPlayerScreen = () => {
         sound.unloadAsync();
       }
     };
-  }, [navigation, title]);
+  }, [navigation, title, text, selectedVoice]);
 
   const handlePlayPause = async () => {
     if (!sound) return;
@@ -102,44 +129,156 @@ const AudioPlayerScreen = () => {
     }
   };
 
+  const handleVoiceChange = (voice: string) => {
+    setSelectedVoice(voice);
+    setShowVoiceDropdown(false);
+    // Reload audio with new voice
+    loadAudio();
+  };
+
+  const handleSpeedChange = async (speed: number) => {
+    setPlaybackSpeed(speed);
+    setShowSpeedDropdown(false);
+
+    // Apply new playback speed if sound is loaded
+    if (sound) {
+      try {
+        await sound.setRateAsync(speed, true);
+      } catch (err) {
+        console.error('Error changing playback speed:', err);
+        setError('Failed to change playback speed. Please try again.');
+      }
+    }
+  };
+
+  const handleNextParagraph = () => {
+    // Check if there are more paragraphs
+    if (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) {
+      const nextIndex = currentParagraphIndex + 1;
+      setCurrentParagraphIndex(nextIndex);
+
+      // Navigate to the next paragraph
+      navigation.setParams({
+        text: paragraphs[nextIndex],
+        title: `Paragraph ${nextIndex + 1}`,
+        paragraphs,
+        paragraphIndex: nextIndex
+      });
+
+      // Load the new audio
+      loadAudio();
+    }
+  };
+
   if (loading) {
     return <Loading message="Loading audio..." />;
   }
 
   if (error) {
     return (
-      <ErrorDisplay 
-        message={error} 
-        onRetry={loadAudio} 
+      <ErrorDisplay
+        message={error}
+        onRetry={loadAudio}
         retryText="Try Again"
       />
     );
   }
+
+  // Render dropdown options
+  const renderDropdownOptions = (options: any[], onSelect: (value: any) => void) => {
+    return options.map((option, index) => (
+      <TouchableOpacity
+        key={index}
+        style={styles.dropdownItem}
+        onPress={() => onSelect(option.value)}
+      >
+        <Text style={styles.dropdownItemText}>{option.label}</Text>
+      </TouchableOpacity>
+    ));
+  };
 
   return (
     <View style={styles.container}>
       <View style={styles.textContainer}>
         <Text style={styles.paragraphText}>{text}</Text>
       </View>
-      
-      <View style={styles.playerContainer}>
-        <TouchableOpacity
-          style={styles.controlButton}
-          onPress={handleRestart}
-        >
-          <Ionicons name="refresh" size={30} color="#333" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.controlButton, styles.playButton]}
-          onPress={handlePlayPause}
-        >
-          <Ionicons 
-            name={isPlaying ? "pause" : "play"} 
-            size={40} 
-            color="#fff" 
-          />
-        </TouchableOpacity>
+
+      <View style={styles.controlsContainer}>
+        {/* Voice and Speed Controls */}
+        <View style={styles.settingsContainer}>
+          {/* Voice Dropdown */}
+          <View style={styles.dropdownContainer}>
+            <TouchableOpacity
+              style={styles.dropdownButton}
+              onPress={() => {
+                setShowVoiceDropdown(!showVoiceDropdown);
+                setShowSpeedDropdown(false);
+              }}
+            >
+              <Text style={styles.dropdownButtonText}>
+                Voice: {VOICE_OPTIONS.find(v => v.value === selectedVoice)?.label.split(' ')[0]}
+              </Text>
+              <Ionicons name={showVoiceDropdown ? "chevron-up" : "chevron-down"} size={18} color="#333" />
+            </TouchableOpacity>
+
+            {showVoiceDropdown && (
+              <View style={styles.dropdownMenu}>
+                {renderDropdownOptions(VOICE_OPTIONS, handleVoiceChange)}
+              </View>
+            )}
+          </View>
+
+          {/* Speed Dropdown */}
+          <View style={styles.dropdownContainer}>
+            <TouchableOpacity
+              style={styles.dropdownButton}
+              onPress={() => {
+                setShowSpeedDropdown(!showSpeedDropdown);
+                setShowVoiceDropdown(false);
+              }}
+            >
+              <Text style={styles.dropdownButtonText}>
+                Speed: {SPEED_OPTIONS.find(s => s.value === playbackSpeed)?.label}
+              </Text>
+              <Ionicons name={showSpeedDropdown ? "chevron-up" : "chevron-down"} size={18} color="#333" />
+            </TouchableOpacity>
+
+            {showSpeedDropdown && (
+              <View style={styles.dropdownMenu}>
+                {renderDropdownOptions(SPEED_OPTIONS, handleSpeedChange)}
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* Playback Controls */}
+        <View style={styles.playerContainer}>
+          <TouchableOpacity
+            style={styles.controlButton}
+            onPress={handleRestart}
+          >
+            <Ionicons name="refresh" size={30} color="#333" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.controlButton, styles.playButton]}
+            onPress={handlePlayPause}
+          >
+            <Ionicons
+              name={isPlaying ? "pause" : "play"}
+              size={40}
+              color="#fff"
+            />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.controlButton, paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 ? {} : styles.disabledButton]}
+            onPress={handleNextParagraph}
+            disabled={!(paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1)}
+          >
+            <Ionicons name="arrow-forward" size={30} color={paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 ? "#333" : "#999"} />
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
@@ -168,11 +307,64 @@ const styles = StyleSheet.create({
     lineHeight: 26,
     color: '#333',
   },
+  controlsContainer: {
+    marginTop: 20,
+  },
+  settingsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  dropdownContainer: {
+    flex: 1,
+    marginHorizontal: 5,
+    position: 'relative',
+  },
+  dropdownButton: {
+    backgroundColor: 'white',
+    padding: 12,
+    borderRadius: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.41,
+    elevation: 2,
+  },
+  dropdownButtonText: {
+    fontSize: 14,
+    color: '#333',
+  },
+  dropdownMenu: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    backgroundColor: 'white',
+    borderRadius: 8,
+    marginTop: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    zIndex: 1000,
+  },
+  dropdownItem: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  dropdownItemText: {
+    fontSize: 14,
+    color: '#333',
+  },
   playerContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 20,
     padding: 16,
   },
   controlButton: {
@@ -188,6 +380,10 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
   },
+  disabledButton: {
+    backgroundColor: '#e0e0e0',
+    opacity: 0.7,
+  },
 });
 
-export default AudioPlayerScreen; 
+export default AudioPlayerScreen;
