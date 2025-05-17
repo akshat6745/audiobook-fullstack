@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Pressable } from 'react-native';
 import { Audio } from 'expo-av';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
@@ -35,6 +35,7 @@ const SPEED_OPTIONS = [
 
 const AudioPlayerScreen = () => {
   const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [nextSound, setNextSound] = useState<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -42,28 +43,49 @@ const AudioPlayerScreen = () => {
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
   const [showSpeedDropdown, setShowSpeedDropdown] = useState(false);
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
   const route = useRoute<AudioPlayerScreenRouteProp>();
   const navigation = useNavigation<AudioPlayerScreenNavigationProp>();
   const { text, title, paragraphs = [], paragraphIndex = 0 } = route.params;
   const [currentParagraphIndex, setCurrentParagraphIndex] = useState(paragraphIndex);
+  
+  // Flag to track if we're in the middle of transitioning between paragraphs
+  const transitioningRef = useRef(false);
 
-  const loadAudio = async () => {
+  const loadAudio = async (forCurrent = true) => {
     try {
-      setLoading(true);
+      if (forCurrent) {
+        setLoading(true);
+      }
 
       // Create a new Sound object
       const { sound: newSound } = await Audio.Sound.createAsync(
         { uri: `http://localhost:8000/tts` },
         { shouldPlay: false },
-        undefined,
+        forCurrent ? onPlaybackStatusUpdate : undefined,
         true
       );
 
-      setSound(newSound);
+      // Store the sound in the appropriate state based on whether it's for current or next paragraph
+      if (forCurrent) {
+        setSound(newSound);
+      } else {
+        setNextSound(newSound);
+      }
+
+      // Determine which text to use
+      const textToUse = forCurrent ? text : 
+        (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) ? 
+          paragraphs[currentParagraphIndex + 1] : null;
+      
+      // If there's no next paragraph text, we can return early for preloading
+      if (!forCurrent && !textToUse) {
+        return;
+      }
 
       // Make the API call with the selected voice
-      const response = await fetchAudio(text, selectedVoice);
+      const response = await fetchAudio(textToUse || text, selectedVoice);
 
       // Create a blob URL from the response
       const url = URL.createObjectURL(response);
@@ -77,12 +99,89 @@ const AudioPlayerScreen = () => {
       // Set the playback speed
       await newSound.setRateAsync(playbackSpeed, true);
 
-      setError(null);
+      if (forCurrent) {
+        setError(null);
+      }
     } catch (err) {
-      setError('Failed to load audio. Please try again.');
-      console.error('Error loading audio:', err);
+      if (forCurrent) {
+        setError('Failed to load audio. Please try again.');
+        console.error('Error loading audio:', err);
+      } else {
+        console.error('Error preloading next audio:', err);
+      }
     } finally {
-      setLoading(false);
+      if (forCurrent) {
+        setLoading(false);
+      }
+    }
+  };
+
+  // Function to preload the next paragraph's audio
+  const preloadNextParagraph = async () => {
+    if (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) {
+      await loadAudio(false);
+    }
+  };
+
+  // Add a function to handle playback status updates
+  const onPlaybackStatusUpdate = (status: any) => {
+    if (status.isLoaded) {
+      // Update isPlaying state based on status
+      setIsPlaying(status.isPlaying);
+      
+      // If the audio has finished playing and there are more paragraphs, move to the next one
+      if (status.didJustFinish && paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 && !transitioningRef.current) {
+        transitioningRef.current = true;
+        transitionToNextParagraph();
+      }
+    }
+  };
+
+  // Handle the transition to the next paragraph using the preloaded audio
+  const transitionToNextParagraph = async () => {
+    setIsTransitioning(true);
+    
+    const nextIndex = currentParagraphIndex + 1;
+    setCurrentParagraphIndex(nextIndex);
+
+    // Update the navigation params to reflect the new paragraph
+    navigation.setParams({
+      text: paragraphs[nextIndex],
+      title: `Paragraph ${nextIndex + 1}`,
+      paragraphs,
+      paragraphIndex: nextIndex
+    });
+
+    try {
+      // Stop the current sound if it's playing
+      if (sound) {
+        await sound.stopAsync();
+        await sound.unloadAsync();
+      }
+
+      // If we have a preloaded next sound, use it
+      if (nextSound) {
+        setSound(nextSound);
+        setNextSound(null);
+        await nextSound.playAsync();
+        setIsPlaying(true);
+        
+        // Preload the next paragraph
+        preloadNextParagraph();
+      } else {
+        // If we somehow don't have a preloaded sound, load the current one
+        await loadAudio(true);
+        if (sound) {
+          await sound.playAsync();
+          setIsPlaying(true);
+        }
+      }
+    } catch (err) {
+      console.error('Error transitioning to next paragraph:', err);
+      setError('Failed to transition to next paragraph. Please try again.');
+    } finally {
+      setIsTransitioning(false);
+      transitioningRef.current = false;
     }
   };
 
@@ -92,12 +191,18 @@ const AudioPlayerScreen = () => {
     });
 
     // Load the audio when the component mounts or when text/voice changes
-    loadAudio();
+    loadAudio(true);
+    
+    // Also preload the next paragraph if available
+    preloadNextParagraph();
 
-    // Cleanup function to unload the sound when the component unmounts
+    // Cleanup function to unload sounds when the component unmounts
     return () => {
       if (sound) {
         sound.unloadAsync();
+      }
+      if (nextSound) {
+        nextSound.unloadAsync();
       }
     };
   }, [navigation, title, text, selectedVoice]);
@@ -135,7 +240,8 @@ const AudioPlayerScreen = () => {
     setSelectedVoice(voice);
     setShowVoiceDropdown(false);
     // Reload audio with new voice
-    loadAudio();
+    loadAudio(true);
+    preloadNextParagraph();
   };
 
   const handleSpeedChange = async (speed: number) => {
@@ -151,28 +257,26 @@ const AudioPlayerScreen = () => {
         setError('Failed to change playback speed. Please try again.');
       }
     }
-  };
-
-  const handleNextParagraph = () => {
-    // Check if there are more paragraphs
-    if (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) {
-      const nextIndex = currentParagraphIndex + 1;
-      setCurrentParagraphIndex(nextIndex);
-
-      // Navigate to the next paragraph
-      navigation.setParams({
-        text: paragraphs[nextIndex],
-        title: `Paragraph ${nextIndex + 1}`,
-        paragraphs,
-        paragraphIndex: nextIndex
-      });
-
-      // Load the new audio
-      loadAudio();
+    
+    // Also update speed for next sound if it's preloaded
+    if (nextSound) {
+      try {
+        await nextSound.setRateAsync(speed, true);
+      } catch (err) {
+        console.error('Error changing next audio playback speed:', err);
+      }
     }
   };
 
-  if (loading) {
+  const handleNextParagraph = async () => {
+    // Check if there are more paragraphs
+    if (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) {
+      transitioningRef.current = true;
+      await transitionToNextParagraph();
+    }
+  };
+
+  if (loading && !isTransitioning) {
     return <Loading message="Loading audio..." />;
   }
 
@@ -180,7 +284,10 @@ const AudioPlayerScreen = () => {
     return (
       <ErrorDisplay
         message={error}
-        onRetry={loadAudio}
+        onRetry={() => {
+          loadAudio(true);
+          preloadNextParagraph();
+        }}
         retryText="Try Again"
       />
     );
