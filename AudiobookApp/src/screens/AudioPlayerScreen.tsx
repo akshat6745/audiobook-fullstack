@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Pressable } from 'react-native';
 import { Audio } from 'expo-av';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -19,6 +19,8 @@ const VOICE_OPTIONS = [
   { label: 'Jenny (Female, US)', value: 'en-US-JennyNeural' },
   { label: 'Sonia (Female, UK)', value: 'en-GB-SoniaNeural' },
   { label: 'Ryan (Male, UK)', value: 'en-GB-RyanNeural' },
+  { label: 'Andrew (Male, US, Multilingual)', value: 'en-US-AndrewMultilingualNeural' },
+  { label: 'Emma (Female, US, Multilingual)', value: 'en-US-EmmaMultilingualNeural' }
 ];
 
 // Playback speed options
@@ -184,17 +186,55 @@ const AudioPlayerScreen = () => {
     );
   }
 
-  // Render dropdown options
-  const renderDropdownOptions = (options: any[], onSelect: (value: any) => void) => {
-    return options.map((option, index) => (
-      <TouchableOpacity
-        key={index}
-        style={styles.dropdownItem}
-        onPress={() => onSelect(option.value)}
+  // Render dropdown options in a modal
+  const renderDropdownModal = (
+    visible: boolean, 
+    options: any[], 
+    onSelect: (value: any) => void, 
+    onClose: () => void,
+    title: string
+  ) => {
+    return (
+      <Modal
+        transparent={true}
+        visible={visible}
+        animationType="fade"
+        onRequestClose={onClose}
       >
-        <Text style={styles.dropdownItemText}>{option.label}</Text>
-      </TouchableOpacity>
-    ));
+        <Pressable style={styles.modalOverlay} onPress={onClose}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>{title}</Text>
+              <ScrollView style={styles.modalScrollView}>
+                {options.map((option, index) => (
+                  <TouchableOpacity
+                    key={index}
+                    style={styles.modalItem}
+                    onPress={() => onSelect(option.value)}
+                  >
+                    <Text style={[
+                      styles.modalItemText,
+                      (title === 'Select Voice' && selectedVoice === option.value) || 
+                      (title === 'Select Speed' && playbackSpeed === option.value) 
+                        ? styles.selectedItemText : {}
+                    ]}>
+                      {option.label}
+                    </Text>
+                    {((title === 'Select Voice' && selectedVoice === option.value) || 
+                      (title === 'Select Speed' && playbackSpeed === option.value)) && 
+                      <Ionicons name="checkmark" size={18} color="#007bff" />
+                    }
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+                <Text style={styles.closeButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
+    );
   };
 
   return (
@@ -207,48 +247,34 @@ const AudioPlayerScreen = () => {
         {/* Voice and Speed Controls */}
         <View style={styles.settingsContainer}>
           {/* Voice Dropdown */}
-          <View style={styles.dropdownContainer}>
-            <TouchableOpacity
-              style={styles.dropdownButton}
-              onPress={() => {
-                setShowVoiceDropdown(!showVoiceDropdown);
-                setShowSpeedDropdown(false);
-              }}
-            >
-              <Text style={styles.dropdownButtonText}>
-                Voice: {VOICE_OPTIONS.find(v => v.value === selectedVoice)?.label.split(' ')[0]}
-              </Text>
-              <Ionicons name={showVoiceDropdown ? "chevron-up" : "chevron-down"} size={18} color="#333" />
-            </TouchableOpacity>
-
-            {showVoiceDropdown && (
-              <View style={styles.dropdownMenu}>
-                {renderDropdownOptions(VOICE_OPTIONS, handleVoiceChange)}
-              </View>
-            )}
-          </View>
+          <TouchableOpacity
+            style={styles.dropdownButton}
+            onPress={() => {
+              setShowVoiceDropdown(true);
+              setShowSpeedDropdown(false);
+            }}
+          >
+            <Ionicons name="person" size={18} color="#007bff" style={styles.buttonIcon} />
+            <Text style={styles.dropdownButtonText}>
+              {VOICE_OPTIONS.find(v => v.value === selectedVoice)?.label.split(' ')[0]}
+            </Text>
+            <Ionicons name="chevron-down" size={18} color="#007bff" />
+          </TouchableOpacity>
 
           {/* Speed Dropdown */}
-          <View style={styles.dropdownContainer}>
-            <TouchableOpacity
-              style={styles.dropdownButton}
-              onPress={() => {
-                setShowSpeedDropdown(!showSpeedDropdown);
-                setShowVoiceDropdown(false);
-              }}
-            >
-              <Text style={styles.dropdownButtonText}>
-                Speed: {SPEED_OPTIONS.find(s => s.value === playbackSpeed)?.label}
-              </Text>
-              <Ionicons name={showSpeedDropdown ? "chevron-up" : "chevron-down"} size={18} color="#333" />
-            </TouchableOpacity>
-
-            {showSpeedDropdown && (
-              <View style={styles.dropdownMenu}>
-                {renderDropdownOptions(SPEED_OPTIONS, handleSpeedChange)}
-              </View>
-            )}
-          </View>
+          <TouchableOpacity
+            style={styles.dropdownButton}
+            onPress={() => {
+              setShowSpeedDropdown(true);
+              setShowVoiceDropdown(false);
+            }}
+          >
+            <Ionicons name="speedometer" size={18} color="#007bff" style={styles.buttonIcon} />
+            <Text style={styles.dropdownButtonText}>
+              {SPEED_OPTIONS.find(s => s.value === playbackSpeed)?.label}
+            </Text>
+            <Ionicons name="chevron-down" size={18} color="#007bff" />
+          </TouchableOpacity>
         </View>
 
         {/* Playback Controls */}
@@ -280,6 +306,24 @@ const AudioPlayerScreen = () => {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Voice Selection Modal */}
+      {renderDropdownModal(
+        showVoiceDropdown,
+        VOICE_OPTIONS,
+        handleVoiceChange,
+        () => setShowVoiceDropdown(false),
+        "Select Voice"
+      )}
+
+      {/* Speed Selection Modal */}
+      {renderDropdownModal(
+        showSpeedDropdown,
+        SPEED_OPTIONS,
+        handleSpeedChange,
+        () => setShowSpeedDropdown(false),
+        "Select Speed"
+      )}
     </View>
   );
 };
@@ -315,12 +359,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 16,
   },
-  dropdownContainer: {
-    flex: 1,
-    marginHorizontal: 5,
-    position: 'relative',
-  },
   dropdownButton: {
+    flex: 1,
     backgroundColor: 'white',
     padding: 12,
     borderRadius: 8,
@@ -332,34 +372,71 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 1.41,
     elevation: 2,
+    marginHorizontal: 5,
+  },
+  buttonIcon: {
+    marginRight: 8,
   },
   dropdownButtonText: {
     fontSize: 14,
     color: '#333',
+    flex: 1,
+    textAlign: 'center',
   },
-  dropdownMenu: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    right: 0,
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContainer: {
+    width: '80%',
+    maxHeight: '70%',
     backgroundColor: 'white',
-    borderRadius: 8,
-    marginTop: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-    zIndex: 1000,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
-  dropdownItem: {
-    padding: 12,
+  modalContent: {
+    padding: 15,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    textAlign: 'center',
+    color: '#333',
+  },
+  modalScrollView: {
+    maxHeight: 250,
+  },
+  modalItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 15,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  dropdownItemText: {
-    fontSize: 14,
+  modalItemText: {
+    fontSize: 16,
     color: '#333',
+  },
+  selectedItemText: {
+    color: '#007bff',
+    fontWeight: 'bold',
+  },
+  closeButton: {
+    marginTop: 15,
+    padding: 12,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  closeButtonText: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: 'bold',
   },
   playerContainer: {
     flexDirection: 'row',
