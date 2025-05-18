@@ -102,13 +102,17 @@ export const getTtsStreamUrl = (text: string, voice: string = DEFAULT_VOICE) => 
   // Create a URL with query parameters for the streaming TTS endpoint
   // Make sure to use GET endpoint as expo-av works better with direct GET URLs
   const url = new URL(`${API_URL}/tts`);
+  
+  // Add text directly without encoding - the API expects unencoded text
   url.searchParams.append('text', text);
   url.searchParams.append('voice', voice);
   
   // Add cache busting to prevent browsers from caching the audio
-  url.searchParams.append('_cb', Date.now().toString());
+  // Use a unique timestamp for each request
+  const timestamp = Date.now();
+  url.searchParams.append('_cb', timestamp.toString());
   
-  console.log(`Created TTS streaming URL: ${url.toString()}`);
+  console.log(`Created TTS streaming URL for text: "${text.substring(0, 30)}..."`);
   return url.toString();
 };
 
