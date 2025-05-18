@@ -214,6 +214,15 @@ async def process_tts_request(request: TTSRequest = None, text: str = None, voic
             text_to_convert = text
             voice_to_use = voice
             
+        # Preprocess the text to handle special patterns
+        # Replace ellipses and asterisks with appropriate speech text
+        text_to_convert = text_to_convert.replace("...", " pause ")
+        text_to_convert = text_to_convert.replace("***", " break ")
+        
+        # Handle empty or too short text after preprocessing
+        if not text_to_convert or text_to_convert.isspace():
+            text_to_convert = ""
+            
         # Stream audio data directly to memory without using temporary files
         communicate = edge_tts.Communicate(text_to_convert, voice_to_use)
         
