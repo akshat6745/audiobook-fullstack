@@ -32,9 +32,19 @@ const SPEED_OPTIONS = [
   { label: '2x', value: 2 },
 ];
 
+type ParagraphAudioType = {
+  text: string;
+  index: number;
+  audio?: Audio.Sound;
+  voiceId?: string; // Track which voice this audio was generated with
+};
+
+// Cache to store audio data by text and voice
+type AudioCacheType = {
+  [key: string]: Audio.Sound;
+};
+
 const AudioPlayerScreen = () => {
-  const [sound, setSound] = useState<Audio.Sound | null>(null);
-  const [nextSound, setNextSound] = useState<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,39 +53,77 @@ const AudioPlayerScreen = () => {
   const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
   const [showSpeedDropdown, setShowSpeedDropdown] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
-
+  
+  // Create a ref for the audio cache
+  const audioCacheRef = useRef<AudioCacheType>({});
+  
   const route = useRoute<AudioPlayerScreenRouteProp>();
   const navigation = useNavigation<AudioPlayerScreenNavigationProp>();
   const { text, title, paragraphs = [], paragraphIndex = 0 } = route.params;
   const [currentParagraphIndex, setCurrentParagraphIndex] = useState(paragraphIndex);
+
+  const [paragraphAudios, setParagraphAudios] = useState<ParagraphAudioType[]>(
+    paragraphs.map((paragraph, index) => ({ text: paragraph, index, audio: undefined }))
+  );
   
   // Flag to track if we're in the middle of transitioning between paragraphs
   const transitioningRef = useRef(false);
 
-  const loadAudio = async (forCurrent = true) => {
-    try {
-      if (forCurrent) {
-        setLoading(true);
-      }
-
-      // Determine which text to use
-      const textToUse = forCurrent ? text : 
-        (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) ? 
-          paragraphs[currentParagraphIndex + 1] : null;
+  // Helper to generate a cache key based on text and voice
+  const getCacheKey = (text: string, voice: string) => `${voice}:${text}`;
+  
+  const loadAudioParagraph = async (index: number) => {
+    if(index >= paragraphs.length || !paragraphs[index]) return;
+    // if(paragraphAudios[index]?.audio) return;
+    
+    const paragraph = paragraphs[index];
+    const cacheKey = getCacheKey(paragraph, selectedVoice);
+    
+    // Check if this audio is already in our cache
+    if(audioCacheRef.current[cacheKey]) {
+      console.log(`Using cached audio for paragraph ${index} with voice ${selectedVoice}`);
       
-      // If there's no next paragraph text, we can return early for preloading
-      if (!forCurrent && !textToUse) {
-        return;
+      const cachedSound = audioCacheRef.current[cacheKey];
+      
+      // Reset the sound position
+      try {
+        await cachedSound.setPositionAsync(0);
+        await cachedSound.setRateAsync(playbackSpeed, true);
+        
+        if (index === currentParagraphIndex) {
+          cachedSound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+        }
+        
+        // Update the paragraphAudios state with the cached sound
+        setParagraphAudios(prev => {
+          const updated = [...prev];
+          updated[index] = { 
+            ...updated[index], 
+            audio: cachedSound,
+            voiceId: selectedVoice
+          };
+          return updated;
+        });
+        
+        if (index === currentParagraphIndex) {
+          setLoading(false);
+        }
+        
+        return cachedSound;
+      } catch (err) {
+        console.error(`Error reusing cached audio for paragraph ${index}:`, err);
+        // If there's an error with the cached sound, delete it from cache and continue to load fresh
+        delete audioCacheRef.current[cacheKey];
       }
-
-      // Get a direct streaming URL with the appropriate parameters
-      const url = getTtsStreamUrl(textToUse || text, selectedVoice);
-
-      console.log(`Loading audio from: ${url}`);
-
-      // Create a new Sound object directly from the streaming endpoint
-      // Use method: 'GET' to ensure we're using HTTP GET
-      const { sound: newSound } = await Audio.Sound.createAsync(
+    }
+    
+    // If not in cache or there was an error with cached sound, load it from API
+    try {
+      const url = getTtsStreamUrl(paragraph, selectedVoice);
+      
+      console.log(`Loading audio for paragraph ${index} from: ${url}`);
+      
+      const { sound } = await Audio.Sound.createAsync(
         { 
           uri: url,
           headers: {
@@ -83,37 +131,61 @@ const AudioPlayerScreen = () => {
           }
         },
         { shouldPlay: false },
-        forCurrent ? onPlaybackStatusUpdate : undefined
+        index === currentParagraphIndex ? onPlaybackStatusUpdate : undefined
       );
-
-      // Set the playback speed
-      await newSound.setRateAsync(playbackSpeed, true);
-
-      // Store the sound in the appropriate state based on whether it's for current or next paragraph
-      if (forCurrent) {
-        setSound(newSound);
-        setError(null);
-      } else {
-        setNextSound(newSound);
-      }
-    } catch (err) {
-      if (forCurrent) {
-        setError('Failed to load audio. Please try again.');
-        console.error('Error loading audio:', err);
-      } else {
-        console.error('Error preloading next audio:', err);
-      }
-    } finally {
-      if (forCurrent) {
+      
+      await sound.setRateAsync(playbackSpeed, true);
+      
+      // Store in cache
+      audioCacheRef.current[cacheKey] = sound;
+      
+      // Update the paragraphAudios state
+      setParagraphAudios(prev => {
+        const updated = [...prev];
+        updated[index] = { 
+          ...updated[index], 
+          audio: sound, 
+          voiceId: selectedVoice 
+        };
+        return updated;
+      });
+      
+      if (index === currentParagraphIndex) {
         setLoading(false);
       }
+      
+      return sound;
+    } catch (err) {
+      console.error(`Error loading audio for paragraph ${index}:`, err);
+      if (index === currentParagraphIndex) {
+        setError('Failed to load audio. Please try again.');
+        setLoading(false);
+      }
+      throw err;
     }
+  };
+
+  const loadAudio = async (forCurrent = true) => {
+    const index = forCurrent ? currentParagraphIndex : currentParagraphIndex + 1;
+    
+    if (index >= paragraphs.length) return;
+    
+    if (forCurrent) {
+      setLoading(true);
+    }
+    
+    await loadAudioParagraph(index);
   };
 
   // Function to preload the next paragraph's audio
   const preloadNextParagraph = async () => {
     if (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) {
-      await loadAudio(false);
+      try {
+        await loadAudioParagraph(currentParagraphIndex + 1);
+      } catch (err) {
+        console.warn(`Error preloading next paragraph: ${err}`);
+        // Don't throw the error - just log it as a warning since preloading failures are not critical
+      }
     }
   };
 
@@ -124,51 +196,87 @@ const AudioPlayerScreen = () => {
       setIsPlaying(status.isPlaying);
       
       // If the audio has finished playing and there are more paragraphs, move to the next one
-      if (status.didJustFinish && paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 && !transitioningRef.current) {
+      if (status.didJustFinish && paragraphs.length > 0 && 
+          currentParagraphIndex < paragraphs.length - 1 && 
+          !transitioningRef.current && !isTransitioning) {
         transitioningRef.current = true;
-        transitionToNextParagraph();
+        // Use setTimeout to avoid state update conflicts
+        setTimeout(() => {
+          transitionToNextParagraph()
+            .catch(err => console.error('Error in automatic transition:', err));
+        }, 100);
       }
     }
   };
 
   // Handle the transition to the next paragraph using the preloaded audio
   const transitionToNextParagraph = async () => {
+    if (isTransitioning) return; // Prevent multiple transitions
+    
     setIsTransitioning(true);
+    setError(null); // Clear any previous errors
     
     const nextIndex = currentParagraphIndex + 1;
-    setCurrentParagraphIndex(nextIndex);
-
-    // Update the navigation params to reflect the new paragraph
-    navigation.setParams({
-      text: paragraphs[nextIndex],
-      title: `Paragraph ${nextIndex + 1}`,
-      paragraphs,
-      paragraphIndex: nextIndex
-    });
-
+    
     try {
       // Stop the current sound if it's playing
-      if (sound) {
-        await sound.stopAsync();
-        await sound.unloadAsync();
+      const currentAudio = paragraphAudios[currentParagraphIndex]?.audio;
+      if (currentAudio) {
+        try {
+          await currentAudio.stopAsync();
+          // Don't unload, just stop since we're caching
+        } catch (err) {
+          console.warn(`Error stopping current audio: ${err}`);
+          // Continue with transition even if there's an error with stopping
+        }
       }
 
-      // If we have a preloaded next sound, use it
-      if (nextSound) {
-        setSound(nextSound);
-        setNextSound(null);
-        await nextSound.playAsync();
-        setIsPlaying(true);
+      // Update state before trying to play audio
+      setCurrentParagraphIndex(nextIndex);
+
+      // Update the navigation params to reflect the new paragraph
+      navigation.setParams({
+        text: paragraphs[nextIndex],
+        title: `Paragraph ${nextIndex + 1}`,
+        paragraphs,
+        paragraphIndex: nextIndex
+      });
+
+      // If we have the next audio loaded, play it
+      let nextAudio = paragraphAudios[nextIndex]?.audio;
+      
+      // If next audio is not loaded, load it now
+      if (!nextAudio || paragraphAudios[nextIndex]?.voiceId !== selectedVoice) {
+        console.log(`Next audio not preloaded or voice changed, loading paragraph ${nextIndex} now`);
+        await loadAudioParagraph(nextIndex);
         
-        // Preload the next paragraph
-        preloadNextParagraph();
-      } else {
-        // If we somehow don't have a preloaded sound, load the current one
-        await loadAudio(true);
-        if (sound) {
-          await sound.playAsync();
+        // Get reference to the newly loaded audio
+        const updatedParagraphAudios = paragraphAudios.map(item => item);
+        nextAudio = updatedParagraphAudios[nextIndex]?.audio;
+      }
+      
+      if (nextAudio) {
+        try {
+          // Set up the playback status handler for the new audio
+          nextAudio.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+          
+          // Play the audio
+          await nextAudio.playAsync();
           setIsPlaying(true);
+        } catch (playErr) {
+          console.error('Error playing next audio:', playErr);
+          throw new Error('Failed to play next paragraph audio');
         }
+        
+        // Preload the next paragraph in the background
+        setTimeout(() => {
+          if (nextIndex < paragraphs.length - 1) {
+            loadAudioParagraph(nextIndex + 1)
+              .catch(err => console.warn(`Failed to preload future paragraph: ${err}`));
+          }
+        }, 500);
+      } else {
+        throw new Error('Failed to load next paragraph audio');
       }
     } catch (err) {
       console.error('Error transitioning to next paragraph:', err);
@@ -184,31 +292,100 @@ const AudioPlayerScreen = () => {
       title: title,
     });
 
-    // Load the audio when the component mounts or when text/voice changes
-    loadAudio(true);
+    // Initial loading of paragraphs
+    const loadInitialParagraphs = async () => {
+      setLoading(true);
+      setError(null);
+      
+      try {
+        // Load current paragraph
+        await loadAudioParagraph(currentParagraphIndex);
+        
+        // Preload next paragraph
+        for (let i = currentParagraphIndex + 1; i < paragraphs.length; i++) {
+          setTimeout(() => {
+            loadAudioParagraph(currentParagraphIndex + 1)
+              .catch(err => console.warn(`Failed to preload next paragraph: ${err}`));
+          }, 500);
+        }
+        // if (currentParagraphIndex < paragraphs.length - 1) {
+        //   setTimeout(() => {
+        //     loadAudioParagraph(currentParagraphIndex + 1)
+        //       .catch(err => console.warn(`Failed to preload next paragraph: ${err}`));
+        //   }, 500);
+        // }
+      } catch (err) {
+        console.error('Error loading initial paragraphs:', err);
+        setError('Failed to load audio. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+    };
     
-    // Also preload the next paragraph if available
-    preloadNextParagraph();
+    loadInitialParagraphs();
 
     // Cleanup function to unload sounds when the component unmounts
     return () => {
-      if (sound) {
-        sound.unloadAsync();
-      }
-      if (nextSound) {
-        nextSound.unloadAsync();
+      // Clear audio cache on unmount
+      Object.values(audioCacheRef.current).forEach(sound => {
+        try {
+          sound.unloadAsync();
+        } catch (err) {
+          console.warn(`Error unloading cached audio:`, err);
+        }
+      });
+      audioCacheRef.current = {};
+    };
+  }, [navigation, title]);
+
+  // Update audio references when voice changes
+  useEffect(() => {
+    // Update paragraph audio references when voice changes
+    const updateAudioForVoiceChange = async () => {
+      if (paragraphAudios.length > 0) {
+        // Check if we need to update the current audio
+        const currentAudio = paragraphAudios[currentParagraphIndex];
+        if (currentAudio && currentAudio.voiceId !== selectedVoice) {
+          // Voice changed, need to load with new voice
+          setLoading(true);
+          setError(null);
+          
+          try {
+            await loadAudioParagraph(currentParagraphIndex);
+            
+            // Preload next paragraph with new voice
+            if (currentParagraphIndex < paragraphs.length - 1) {
+              setTimeout(() => {
+                loadAudioParagraph(currentParagraphIndex + 1)
+                  .catch(err => console.warn(`Failed to preload next paragraph with new voice: ${err}`));
+              }, 500);
+            }
+          } catch (err) {
+            console.error('Error updating audio for voice change:', err);
+            setError('Failed to load audio with new voice. Please try again.');
+          } finally {
+            setLoading(false);
+          }
+        }
       }
     };
-  }, [navigation, title, text, selectedVoice]);
+    
+    updateAudioForVoiceChange();
+  }, [selectedVoice]);
 
   const handlePlayPause = async () => {
-    if (!sound) return;
+    const currentAudio = paragraphAudios[currentParagraphIndex]?.audio;
+    if (!currentAudio) {
+      // If audio not loaded, try loading it
+      await loadAudioParagraph(currentParagraphIndex);
+      return;
+    }
 
     try {
       if (isPlaying) {
-        await sound.pauseAsync();
+        await currentAudio.pauseAsync();
       } else {
-        await sound.playAsync();
+        await currentAudio.playAsync();
       }
       setIsPlaying(!isPlaying);
     } catch (err) {
@@ -218,11 +395,16 @@ const AudioPlayerScreen = () => {
   };
 
   const handleRestart = async () => {
-    if (!sound) return;
+    const currentAudio = paragraphAudios[currentParagraphIndex]?.audio;
+    if (!currentAudio) {
+      // If audio not loaded, try loading it
+      await loadAudioParagraph(currentParagraphIndex);
+      return;
+    }
 
     try {
-      await sound.stopAsync();
-      await sound.playFromPositionAsync(0);
+      await currentAudio.stopAsync();
+      await currentAudio.playFromPositionAsync(0);
       setIsPlaying(true);
     } catch (err) {
       console.error('Error restarting audio:', err);
@@ -233,44 +415,40 @@ const AudioPlayerScreen = () => {
   const handleVoiceChange = (voice: string) => {
     setSelectedVoice(voice);
     setShowVoiceDropdown(false);
-    // Reload audio with new voice
-    loadAudio(true);
-    preloadNextParagraph();
   };
 
   const handleSpeedChange = async (speed: number) => {
     setPlaybackSpeed(speed);
     setShowSpeedDropdown(false);
 
-    // Apply new playback speed if sound is loaded
-    if (sound) {
-      try {
-        await sound.setRateAsync(speed, true);
-      } catch (err) {
-        console.error('Error changing playback speed:', err);
-        setError('Failed to change playback speed. Please try again.');
+    // Apply new playback speed to all loaded audio
+    paragraphAudios.forEach(async (item) => {
+      if (item.audio) {
+        try {
+          await item.audio.setRateAsync(speed, true);
+        } catch (err) {
+          console.error(`Error changing playback speed for paragraph ${item.index}:`, err);
+        }
       }
-    }
-    
-    // Also update speed for next sound if it's preloaded
-    if (nextSound) {
-      try {
-        await nextSound.setRateAsync(speed, true);
-      } catch (err) {
-        console.error('Error changing next audio playback speed:', err);
-      }
-    }
+    });
   };
 
   const handleNextParagraph = async () => {
-    // Check if there are more paragraphs
-    if (paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) {
+    // Check if there are more paragraphs and we're not already transitioning
+    if (paragraphs.length > 0 && 
+        currentParagraphIndex < paragraphs.length - 1 && 
+        !isTransitioning && 
+        !transitioningRef.current) {
+      
       transitioningRef.current = true;
       await transitionToNextParagraph();
     }
   };
 
-  if (loading && !isTransitioning) {
+  const isCurrentAudioLoading = !paragraphAudios[currentParagraphIndex]?.audio || 
+                               paragraphAudios[currentParagraphIndex]?.voiceId !== selectedVoice;
+
+  if ((loading || isCurrentAudioLoading) && !isTransitioning) {
     return <Loading message="Loading audio..." />;
   }
 
@@ -279,8 +457,10 @@ const AudioPlayerScreen = () => {
       <ErrorDisplay
         message={error}
         onRetry={() => {
-          loadAudio(true);
-          preloadNextParagraph();
+          loadAudioParagraph(currentParagraphIndex);
+          if (currentParagraphIndex < paragraphs.length - 1) {
+            loadAudioParagraph(currentParagraphIndex + 1);
+          }
         }}
         retryText="Try Again"
       />
