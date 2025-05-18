@@ -7,9 +7,16 @@ import { RootStackParamList, Chapter } from '../types';
 import Loading from '../components/Loading';
 import ErrorDisplay from '../components/ErrorDisplay';
 import FloatingAudioPlayer from '../components/FloatingAudioPlayer';
+import { DEFAULT_VOICE } from '../utils/config';
 
 type ChapterContentScreenRouteProp = RouteProp<RootStackParamList, 'ChapterContent'>;
 type ChapterContentScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'ChapterContent'>;
+
+// Interface for audio settings that should persist between chapters
+interface AudioSettings {
+  voice: string;
+  playbackSpeed: number;
+}
 
 const ChapterContentScreen = () => {
   const [paragraphs, setParagraphs] = useState<string[]>([]);
@@ -19,6 +26,10 @@ const ChapterContentScreen = () => {
   const [activeParagraphIndex, setActiveParagraphIndex] = useState(-1);
   const [availableChapters, setAvailableChapters] = useState<Chapter[]>([]);
   const [loadingNextChapter, setLoadingNextChapter] = useState(false);
+  const [audioSettings, setAudioSettings] = useState<AudioSettings>({
+    voice: DEFAULT_VOICE,
+    playbackSpeed: 1
+  });
   
   // Use ref to track last active paragraph index to prevent unnecessary scrolling
   const lastActiveIndexRef = useRef(-1);
@@ -162,6 +173,7 @@ const ChapterContentScreen = () => {
       if (currentChapterIndex >= 0 && currentChapterIndex < chapters.length - 1) {
         const nextChapter = chapters[currentChapterIndex + 1];
         console.log(`Loading next chapter: ${nextChapter.chapterNumber} - ${nextChapter.chapterTitle}`);
+        console.log(`Preserving audio settings: Voice=${audioSettings.voice}, Speed=${audioSettings.playbackSpeed}`);
         
         // Update navigation title first to give user feedback
         navigation.setOptions({
@@ -220,13 +232,29 @@ const ChapterContentScreen = () => {
     } finally {
       setLoadingNextChapter(false);
     }
-  }, [novelName, chapterNumber, availableChapters, navigation, loadingNextChapter]);
+  }, [novelName, chapterNumber, availableChapters, navigation, loadingNextChapter, audioSettings]);
 
   const handleCloseAudioPlayer = () => {
     setShowAudioPlayer(false);
     setActiveParagraphIndex(-1);
     lastActiveIndexRef.current = -1;
   };
+
+  // Handle voice change from the audio player
+  const handleVoiceChange = useCallback((voice: string) => {
+    setAudioSettings(prev => ({
+      ...prev,
+      voice
+    }));
+  }, []);
+
+  // Handle speed change from the audio player
+  const handleSpeedChange = useCallback((speed: number) => {
+    setAudioSettings(prev => ({
+      ...prev,
+      playbackSpeed: speed
+    }));
+  }, []);
 
   if (loading) {
     return <Loading message="Loading chapter content..." />;
@@ -308,6 +336,10 @@ const ChapterContentScreen = () => {
         onChapterComplete={handleChapterComplete}
         isVisible={showAudioPlayer}
         onClose={handleCloseAudioPlayer}
+        selectedVoice={audioSettings.voice}
+        onVoiceChange={handleVoiceChange}
+        playbackSpeed={audioSettings.playbackSpeed}
+        onSpeedChange={handleSpeedChange}
       />
     </View>
   );

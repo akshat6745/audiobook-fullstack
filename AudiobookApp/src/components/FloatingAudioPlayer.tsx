@@ -40,6 +40,10 @@ type FloatingAudioPlayerProps = {
   onChapterComplete?: () => void; // Callback when all paragraphs in chapter are finished
   isVisible: boolean;
   onClose: () => void;
+  selectedVoice?: string; // Optional prop to control the voice from parent
+  onVoiceChange?: (voice: string) => void; // Callback when voice changes
+  playbackSpeed?: number; // Optional prop to control the speed from parent
+  onSpeedChange?: (speed: number) => void; // Callback when speed changes
 };
 
 const FloatingAudioPlayer = ({
@@ -49,12 +53,16 @@ const FloatingAudioPlayer = ({
   onParagraphComplete,
   onChapterComplete,
   isVisible,
-  onClose
+  onClose,
+  selectedVoice: propSelectedVoice,
+  onVoiceChange,
+  playbackSpeed: propPlaybackSpeed,
+  onSpeedChange
 }: FloatingAudioPlayerProps) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [selectedVoice, setSelectedVoice] = useState(DEFAULT_VOICE);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [selectedVoice, setSelectedVoice] = useState(propSelectedVoice || DEFAULT_VOICE);
+  const [playbackSpeed, setPlaybackSpeed] = useState(propPlaybackSpeed || 1);
   const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
   const [showSpeedDropdown, setShowSpeedDropdown] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -422,6 +430,25 @@ const FloatingAudioPlayer = ({
       }
     }
   }, [initialParagraphIndex, isVisible, paragraphs]);
+
+  // Update internal state when props change
+  useEffect(() => {
+    if (propSelectedVoice && propSelectedVoice !== selectedVoice) {
+      setSelectedVoice(propSelectedVoice);
+    }
+  }, [propSelectedVoice]);
+
+  useEffect(() => {
+    if (propPlaybackSpeed && propPlaybackSpeed !== playbackSpeed) {
+      setPlaybackSpeed(propPlaybackSpeed);
+      
+      // Apply new speed to current sound if it exists
+      if (currentSound.current) {
+        currentSound.current.setRateAsync(propPlaybackSpeed, true)
+          .catch(err => console.warn('Error updating playback speed from props:', err));
+      }
+    }
+  }, [propPlaybackSpeed]);
 
   const cleanupAudio = async () => {
     // Set flags first to prevent callbacks from firing during cleanup
@@ -844,6 +871,11 @@ const FloatingAudioPlayer = ({
     setSelectedVoice(voice);
     setShowVoiceDropdown(false);
     
+    // Notify parent component about the voice change
+    if (onVoiceChange) {
+      onVoiceChange(voice);
+    }
+    
     // Clear the audio cache since voice changed
     try {
       // Unload all cached audio with previous voice
@@ -876,6 +908,11 @@ const FloatingAudioPlayer = ({
     
     setPlaybackSpeed(speed);
     setShowSpeedDropdown(false);
+    
+    // Notify parent component about the speed change
+    if (onSpeedChange) {
+      onSpeedChange(speed);
+    }
     
     // Apply new speed to current sound
     if (currentSound.current) {
