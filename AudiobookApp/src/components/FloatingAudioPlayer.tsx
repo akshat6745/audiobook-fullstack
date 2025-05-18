@@ -37,6 +37,7 @@ type FloatingAudioPlayerProps = {
   initialParagraphIndex: number;
   setActiveParagraphIndex: (index: number) => void;
   onParagraphComplete: (index: number) => void;
+  onChapterComplete?: () => void; // Callback when all paragraphs in chapter are finished
   isVisible: boolean;
   onClose: () => void;
 };
@@ -46,6 +47,7 @@ const FloatingAudioPlayer = ({
   initialParagraphIndex,
   setActiveParagraphIndex,
   onParagraphComplete,
+  onChapterComplete,
   isVisible,
   onClose
 }: FloatingAudioPlayerProps) => {
@@ -56,6 +58,7 @@ const FloatingAudioPlayer = ({
   const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
   const [showSpeedDropdown, setShowSpeedDropdown] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isLastParagraph, setIsLastParagraph] = useState(false);
   
   // Animation for the player
   const slideAnim = useRef(new Animated.Value(100)).current;
@@ -298,12 +301,21 @@ const FloatingAudioPlayer = ({
       console.log(`initialParagraphIndex changed to ${initialParagraphIndex}`);
       logCacheStatus('Before paragraph index change');
       
+      // Check if this is the last paragraph in the chapter
+      setIsLastParagraph(initialParagraphIndex === paragraphs.length - 1);
+      
+      // Reset error state when paragraph changes
+      setError(null);
+      
       // Stop current audio
       if (currentSound.current) {
         currentSound.current.pauseAsync().catch(err => 
           console.warn('Error pausing sound during paragraph change:', err)
         );
       }
+      
+      // Handle auto-play when transitioning to index 0 (new chapter)
+      const isNewChapter = initialParagraphIndex === 0;
       
       // Don't immediately load audio if not visible
       if (isVisible) {
@@ -333,11 +345,17 @@ const FloatingAudioPlayer = ({
                     if (currentSound.current) {
                       currentSound.current.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
                       
-                      // Auto-play if we were already playing
-                      if (isPlaying && currentSound.current) {
-                        currentSound.current.playAsync().catch(err => 
-                          console.warn('Error auto-playing after paragraph change:', err)
-                        );
+                      // Auto-play if we were already playing or if this is a new chapter
+                      if ((isPlaying || isNewChapter) && currentSound.current) {
+                        console.log(`Auto-playing paragraph ${initialParagraphIndex} after index change`);
+                        currentSound.current.playAsync()
+                          .then(() => {
+                            // Ensure isPlaying state is updated
+                            setIsPlaying(true);
+                          })
+                          .catch(err => 
+                            console.warn('Error auto-playing after paragraph change:', err)
+                          );
                       }
                       
                       // Preload next paragraphs
@@ -351,33 +369,48 @@ const FloatingAudioPlayer = ({
                     // If there's an error with cached audio, fall back to fresh load
                     delete audioCacheRef.current[cacheKey];
                     loadAudioForText(paragraphText, initialParagraphIndex).then(() => {
-                      // Auto-play the new paragraph if we were already playing
-                      if (isPlaying && currentSound.current) {
-                        currentSound.current.playAsync().catch(err => 
-                          console.warn('Error auto-playing after paragraph change:', err)
-                        );
+                      // Auto-play the new paragraph if we were already playing or if this is a new chapter
+                      if ((isPlaying || isNewChapter) && currentSound.current) {
+                        console.log(`Auto-playing paragraph ${initialParagraphIndex} after fresh load`);
+                        currentSound.current.playAsync()
+                          .then(() => {
+                            setIsPlaying(true);
+                          })
+                          .catch(err => 
+                            console.warn('Error auto-playing after paragraph change:', err)
+                          );
                       }
                     });
                   });
               } catch (err) {
                 console.warn('Error using cached audio:', err);
                 loadAudioForText(paragraphText, initialParagraphIndex).then(() => {
-                  // Auto-play the new paragraph if we were already playing
-                  if (isPlaying && currentSound.current) {
-                    currentSound.current.playAsync().catch(err => 
-                      console.warn('Error auto-playing after paragraph change:', err)
-                    );
+                  // Auto-play the new paragraph if we were already playing or if this is a new chapter
+                  if ((isPlaying || isNewChapter) && currentSound.current) {
+                    console.log(`Auto-playing paragraph ${initialParagraphIndex} after error recovery`);
+                    currentSound.current.playAsync()
+                      .then(() => {
+                        setIsPlaying(true);
+                      })
+                      .catch(err => 
+                        console.warn('Error auto-playing after paragraph change:', err)
+                      );
                   }
                 });
               }
             } else {
               console.log(`CACHE MISS: Loading audio for paragraph ${initialParagraphIndex} from API`);
               loadAudioForText(paragraphText, initialParagraphIndex).then(() => {
-                // Auto-play the new paragraph if we were already playing
-                if (isPlaying && currentSound.current) {
-                  currentSound.current.playAsync().catch(err => 
-                    console.warn('Error auto-playing after paragraph change:', err)
-                  );
+                // Auto-play the new paragraph if we were already playing or if this is a new chapter
+                if ((isPlaying || isNewChapter) && currentSound.current) {
+                  console.log(`Auto-playing paragraph ${initialParagraphIndex} after API load`);
+                  currentSound.current.playAsync()
+                    .then(() => {
+                      setIsPlaying(true);
+                    })
+                    .catch(err => 
+                      console.warn('Error auto-playing after paragraph change:', err)
+                    );
                 }
               });
             }
@@ -457,9 +490,13 @@ const FloatingAudioPlayer = ({
         // If we have more paragraphs, move to the next
         handleNextParagraph();
       } else if (nextIndex >= paragraphs.length) {
-        // If we're at the end, just stop playing
-        console.log("Reached end of paragraphs, stopping playback");
+        // If we're at the end of all paragraphs, trigger chapter complete
+        console.log("Reached end of all paragraphs, chapter complete");
         setIsPlaying(false);
+        if (onChapterComplete) {
+          onChapterComplete();
+        }
+        setIsLastParagraph(true);
       }
     }
   };
@@ -488,7 +525,14 @@ const FloatingAudioPlayer = ({
       
       console.log(`loadAudio called for paragraph ${initialParagraphIndex}: "${currentText.substring(0, 30)}..."`);
       
-      await loadAudioForText(currentText, initialParagraphIndex);
+      const success = await loadAudioForText(currentText, initialParagraphIndex);
+      
+      // Auto-play if this is the first paragraph (likely a new chapter)
+      if (success && currentSound.current && initialParagraphIndex === 0) {
+        console.log(`Auto-playing first paragraph of chapter`);
+        await currentSound.current.playAsync();
+        setIsPlaying(true);
+      }
       
       // Preload next paragraphs if available
       if (initialParagraphIndex < paragraphs.length - 1) {
@@ -906,6 +950,14 @@ const FloatingAudioPlayer = ({
         <Text style={styles.headerTitle}>Now Playing</Text>
       </View>
 
+      {isLastParagraph && (
+        <View style={styles.chapterStatusContainer}>
+          <Text style={styles.lastParagraphText}>
+            Last paragraph in this chapter
+          </Text>
+        </View>
+      )}
+
       <View style={styles.controlsContainer}>
         {/* Voice and Speed Settings */}
         <View style={styles.settingsContainer}>
@@ -1164,6 +1216,16 @@ const styles = StyleSheet.create({
   retryText: {
     color: 'white',
     fontWeight: 'bold',
+  },
+  chapterStatusContainer: {
+    paddingVertical: 5,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  lastParagraphText: {
+    color: '#ff8800',
+    fontWeight: 'bold',
+    fontSize: 14,
   },
 });
 

@@ -2,8 +2,8 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { fetchChapterContent } from '../services/api';
-import { RootStackParamList } from '../types';
+import { fetchChapterContent, fetchChapters } from '../services/api';
+import { RootStackParamList, Chapter } from '../types';
 import Loading from '../components/Loading';
 import ErrorDisplay from '../components/ErrorDisplay';
 import FloatingAudioPlayer from '../components/FloatingAudioPlayer';
@@ -17,6 +17,8 @@ const ChapterContentScreen = () => {
   const [error, setError] = useState<string | null>(null);
   const [showAudioPlayer, setShowAudioPlayer] = useState(false);
   const [activeParagraphIndex, setActiveParagraphIndex] = useState(-1);
+  const [availableChapters, setAvailableChapters] = useState<Chapter[]>([]);
+  const [loadingNextChapter, setLoadingNextChapter] = useState(false);
   
   // Use ref to track last active paragraph index to prevent unnecessary scrolling
   const lastActiveIndexRef = useRef(-1);
@@ -26,10 +28,10 @@ const ChapterContentScreen = () => {
   const { novelName, chapterNumber, chapterTitle } = route.params;
   const flatListRef = useRef<FlatList>(null);
 
-  const loadChapterContent = async () => {
+  const loadChapterContent = async (novel: string = novelName, chapter: number = chapterNumber) => {
     try {
       setLoading(true);
-      const content = await fetchChapterContent(novelName, chapterNumber);
+      const content = await fetchChapterContent(novel, chapter);
       
       // Filter out empty paragraphs
       const filteredContent = content.filter((para: string) => 
@@ -50,13 +52,45 @@ const ChapterContentScreen = () => {
     }
   };
 
+  const loadAllChapters = async () => {
+    try {
+      const chapters = await fetchChapters(novelName);
+      setAvailableChapters(chapters);
+      return chapters;
+    } catch (err) {
+      console.error('Error loading all chapters:', err);
+      return [];
+    }
+  };
+
   useEffect(() => {
     navigation.setOptions({
       title: `Chapter ${chapterNumber}`,
     });
 
-    loadChapterContent();
+    // Load current chapter content
+    loadChapterContent(novelName, chapterNumber);
+    
+    // Load all available chapters for navigation
+    loadAllChapters();
   }, [navigation, novelName, chapterNumber, chapterTitle]);
+
+  // Add a custom back handler
+  useEffect(() => {
+    // Add a custom handler for when the user presses the back button
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+      // Navigate back to chapters screen with the current chapter number
+      if (e.data.action.type === 'GO_BACK') {
+        e.preventDefault();
+        navigation.navigate('Chapters', {
+          novelName,
+          lastChapter: chapterNumber
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [navigation, novelName, chapterNumber]);
 
   const handleParagraphPress = (index: number) => {
     console.log(`Paragraph ${index} pressed`);
@@ -106,6 +140,88 @@ const ChapterContentScreen = () => {
     }
   }, [paragraphs.length]);
 
+  const handleChapterComplete = useCallback(async () => {
+    console.log('Chapter complete, checking for next chapter');
+    
+    // Don't proceed if we're already loading a new chapter
+    if (loadingNextChapter) return;
+    
+    try {
+      setLoadingNextChapter(true);
+      
+      // Get all chapters if we don't have them yet
+      let chapters = availableChapters;
+      if (chapters.length === 0) {
+        chapters = await loadAllChapters();
+      }
+      
+      // Find the current chapter index
+      const currentChapterIndex = chapters.findIndex(c => c.chapterNumber === chapterNumber);
+      
+      // Check if there's a next chapter
+      if (currentChapterIndex >= 0 && currentChapterIndex < chapters.length - 1) {
+        const nextChapter = chapters[currentChapterIndex + 1];
+        console.log(`Loading next chapter: ${nextChapter.chapterNumber} - ${nextChapter.chapterTitle}`);
+        
+        // Update navigation title first to give user feedback
+        navigation.setOptions({
+          title: `Chapter ${nextChapter.chapterNumber}`,
+        });
+        
+        // Load the content of the next chapter
+        const nextContent = await fetchChapterContent(novelName, nextChapter.chapterNumber);
+        
+        // Filter out empty paragraphs
+        const filteredNextContent = nextContent.filter((para: string) => 
+          para && para.trim().length > 0
+        );
+        
+        if (filteredNextContent.length === 0) {
+          console.warn('Next chapter has no readable content');
+          return;
+        }
+        
+        // Update route params to match the new chapter
+        // This is a workaround as we can't directly modify route.params
+        // @ts-ignore (we know this exists on the navigation object)
+        navigation.setParams({
+          novelName,
+          chapterNumber: nextChapter.chapterNumber,
+          chapterTitle: nextChapter.chapterTitle,
+        });
+        
+        // Update state with new chapter content
+        setParagraphs(filteredNextContent);
+        
+        // Reset isPlaying state to ensure it's set to play mode
+        const wasPlaying = true; // Always assume we want to continue playing
+        
+        // Start playing from the beginning
+        lastActiveIndexRef.current = 0;
+        
+        // Important: Use a setTimeout to ensure the component has time to update before we trigger playback
+        setTimeout(() => {
+          // Set the active paragraph index which will trigger the audio to load
+          setActiveParagraphIndex(0);
+          
+          // This ensures the audio player remains visible
+          setShowAudioPlayer(true);
+          
+          // Scroll to top
+          if (flatListRef.current) {
+            flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+          }
+        }, 100);
+      } else {
+        console.log('No more chapters available');
+      }
+    } catch (err) {
+      console.error('Error loading next chapter:', err);
+    } finally {
+      setLoadingNextChapter(false);
+    }
+  }, [novelName, chapterNumber, availableChapters, navigation, loadingNextChapter]);
+
   const handleCloseAudioPlayer = () => {
     setShowAudioPlayer(false);
     setActiveParagraphIndex(-1);
@@ -145,6 +261,9 @@ const ChapterContentScreen = () => {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>{chapterTitle}</Text>
+      {loadingNextChapter && (
+        <Text style={styles.loadingNextChapter}>Loading next chapter...</Text>
+      )}
       <FlatList
         ref={flatListRef}
         data={paragraphs}
@@ -186,6 +305,7 @@ const ChapterContentScreen = () => {
         initialParagraphIndex={activeParagraphIndex}
         setActiveParagraphIndex={setActiveParagraphIndex}
         onParagraphComplete={handleParagraphComplete}
+        onChapterComplete={handleChapterComplete}
         isVisible={showAudioPlayer}
         onClose={handleCloseAudioPlayer}
       />
@@ -207,6 +327,12 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 16,
     color: '#333',
+  },
+  loadingNextChapter: {
+    color: '#007bff',
+    textAlign: 'center',
+    marginBottom: 10,
+    fontWeight: 'bold',
   },
   paragraphItem: {
     backgroundColor: 'white',
