@@ -91,7 +91,6 @@ const ChapterContentScreen = () => {
     // Only scroll if the index is different from our last scrolled position
     if (newIndex !== lastActiveIndexRef.current) {
       lastActiveIndexRef.current = newIndex;
-      setActiveParagraphIndex(newIndex);
       
       // Use a small timeout to ensure the UI updates before scrolling
       setTimeout(() => {
@@ -104,9 +103,6 @@ const ChapterContentScreen = () => {
           });
         }
       }, 100);
-    } else {
-      // Still update the active index even if we don't scroll
-      setActiveParagraphIndex(newIndex);
     }
   }, [paragraphs.length]);
 
@@ -188,6 +184,7 @@ const ChapterContentScreen = () => {
       <FloatingAudioPlayer
         paragraphs={paragraphs}
         initialParagraphIndex={activeParagraphIndex}
+        setActiveParagraphIndex={setActiveParagraphIndex}
         onParagraphComplete={handleParagraphComplete}
         isVisible={showAudioPlayer}
         onClose={handleCloseAudioPlayer}

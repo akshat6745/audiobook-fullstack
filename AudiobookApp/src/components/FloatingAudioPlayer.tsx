@@ -31,6 +31,7 @@ type AudioCacheType = {
 type FloatingAudioPlayerProps = {
   paragraphs: string[];
   initialParagraphIndex: number;
+  setActiveParagraphIndex: (index: number) => void;
   onParagraphComplete: (index: number) => void;
   isVisible: boolean;
   onClose: () => void;
@@ -39,13 +40,13 @@ type FloatingAudioPlayerProps = {
 const FloatingAudioPlayer = ({
   paragraphs,
   initialParagraphIndex,
+  setActiveParagraphIndex,
   onParagraphComplete,
   isVisible,
   onClose
 }: FloatingAudioPlayerProps) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [currentParagraphIndex, setCurrentParagraphIndex] = useState(initialParagraphIndex);
   const [selectedVoice, setSelectedVoice] = useState(DEFAULT_VOICE);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [showVoiceDropdown, setShowVoiceDropdown] = useState(false);
@@ -198,14 +199,11 @@ const FloatingAudioPlayer = ({
     };
   }, [isVisible]);
 
-  // Update when current paragraph index changes from parent
+  // Update when initialParagraphIndex changes from parent
   useEffect(() => {
-    console.log(`initialParagraphIndex changed to ${initialParagraphIndex}, current is ${currentParagraphIndex}`);
     
-    // Only proceed if the index is valid and different
-    if (initialParagraphIndex >= 0 && 
-        initialParagraphIndex !== currentParagraphIndex && 
-        initialParagraphIndex < paragraphs.length) {
+    // Only proceed if the index is valid
+    if (initialParagraphIndex >= 0 && initialParagraphIndex < paragraphs.length) {
       
       // Stop current audio
       if (currentSound.current) {
@@ -213,9 +211,6 @@ const FloatingAudioPlayer = ({
           console.warn('Error pausing sound during paragraph change:', err)
         );
       }
-      
-      // Update our internal index to match parent's
-      setCurrentParagraphIndex(initialParagraphIndex);
       
       // Don't immediately load audio if not visible
       if (isVisible) {
@@ -302,7 +297,7 @@ const FloatingAudioPlayer = ({
       console.log("Audio finished, moving to next paragraph");
       
       // Check if we can move to next paragraph
-      const nextIndex = currentParagraphIndex + 1;
+      const nextIndex = initialParagraphIndex + 1;
       if (nextIndex < paragraphs.length && !isTransitioning.current) {
         // If we have more paragraphs, move to the next
         handleNextParagraph();
@@ -320,28 +315,28 @@ const FloatingAudioPlayer = ({
     try {
       setLoading(true);
       
-      if (currentParagraphIndex >= paragraphs.length || currentParagraphIndex < 0) {
-        console.warn(`Invalid paragraph index: ${currentParagraphIndex}`);
+      if (initialParagraphIndex >= paragraphs.length || initialParagraphIndex < 0) {
+        console.warn(`Invalid paragraph index: ${initialParagraphIndex}`);
         setLoading(false);
         setError('Invalid paragraph index');
         return;
       }
       
-      const currentText = paragraphs[currentParagraphIndex];
+      const currentText = paragraphs[initialParagraphIndex];
       
       if (!currentText || currentText.trim().length === 0) {
-        console.warn(`Empty text for paragraph ${currentParagraphIndex}`);
+        console.warn(`Empty text for paragraph ${initialParagraphIndex}`);
         setLoading(false);
         setError('Cannot play: empty paragraph text');
         return;
       }
       
-      console.log(`loadAudio called for paragraph ${currentParagraphIndex}: "${currentText.substring(0, 30)}..."`);
+      console.log(`loadAudio called for paragraph ${initialParagraphIndex}: "${currentText.substring(0, 30)}..."`);
       
-      await loadAudioForText(currentText, currentParagraphIndex);
+      await loadAudioForText(currentText, initialParagraphIndex);
       
       // Preload next paragraph if available
-      if (currentParagraphIndex < paragraphs.length - 1) {
+      if (initialParagraphIndex < paragraphs.length - 1) {
         preloadNextParagraph();
       }
     } catch (err) {
@@ -354,7 +349,7 @@ const FloatingAudioPlayer = ({
 
   const preloadNextParagraph = async () => {
     try {
-      const nextIndex = currentParagraphIndex + 1;
+      const nextIndex = initialParagraphIndex + 1;
       if (nextIndex >= paragraphs.length) return;
       
       const nextText = paragraphs[nextIndex];
@@ -443,11 +438,11 @@ const FloatingAudioPlayer = ({
   };
 
   const handleRetry = async () => {
-    if (currentParagraphIndex >= 0 && currentParagraphIndex < paragraphs.length) {
-      const text = paragraphs[currentParagraphIndex];
-      console.log(`Manually retrying audio load for paragraph ${currentParagraphIndex}`);
+    if (initialParagraphIndex >= 0 && initialParagraphIndex < paragraphs.length) {
+      const text = paragraphs[initialParagraphIndex];
+      console.log(`Manually retrying audio load for paragraph ${initialParagraphIndex}`);
       
-      const success = await loadAudioForText(text, currentParagraphIndex);
+      const success = await loadAudioForText(text, initialParagraphIndex);
       if (success && currentSound.current && isPlaying) {
         await currentSound.current.playAsync();
       }
@@ -460,7 +455,7 @@ const FloatingAudioPlayer = ({
       return;
     }
     
-    const nextIndex = currentParagraphIndex + 1;
+    const nextIndex = initialParagraphIndex + 1;
     if (nextIndex >= paragraphs.length) {
       setIsPlaying(false);
       return;
@@ -475,7 +470,7 @@ const FloatingAudioPlayer = ({
     }
     
     isTransitioning.current = true;
-    console.log(`Transitioning from paragraph ${currentParagraphIndex} to ${nextIndex}`);
+    console.log(`Transitioning from paragraph ${initialParagraphIndex} to ${nextIndex}`);
     
     try {
       // Stop current audio first
@@ -485,11 +480,11 @@ const FloatingAudioPlayer = ({
         currentSound.current.setOnPlaybackStatusUpdate(null);
       }
       
-      // First update the index in parent by calling onParagraphComplete
-      onParagraphComplete(nextIndex);
+      // First update the parent's index by calling the setter directly
+      setActiveParagraphIndex(nextIndex);
       
-      // Update our own index
-      setCurrentParagraphIndex(nextIndex);
+      // Then notify parent about completion
+      onParagraphComplete(nextIndex);
       
       // Force a small delay to ensure state updates propagate
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -664,15 +659,15 @@ const FloatingAudioPlayer = ({
           <TouchableOpacity
             style={[
               styles.controlButton, 
-              currentParagraphIndex < paragraphs.length - 1 ? {} : styles.disabledButton
+              initialParagraphIndex < paragraphs.length - 1 ? {} : styles.disabledButton
             ]}
             onPress={handleNextParagraph}
-            disabled={!(currentParagraphIndex < paragraphs.length - 1) || loading}
+            disabled={!(initialParagraphIndex < paragraphs.length - 1) || loading}
           >
             <Ionicons 
               name="arrow-forward" 
               size={24} 
-              color={currentParagraphIndex < paragraphs.length - 1 ? "#333" : "#999"} 
+              color={initialParagraphIndex < paragraphs.length - 1 ? "#333" : "#999"} 
             />
           </TouchableOpacity>
         </View>
