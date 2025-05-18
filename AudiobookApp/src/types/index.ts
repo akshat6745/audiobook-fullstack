@@ -12,6 +12,6 @@ export type RootStackParamList = {
   Novels: undefined;
   Chapters: { novelName: string };
   ChapterContent: { novelName: string; chapterNumber: number; chapterTitle: string };
-  AudioPlayer: { text: string; title: string };
+  AudioPlayer: { text: string; title: string, paragraphs: string[], paragraphIndex: number };
   [key: string]: undefined | object;
 } 
