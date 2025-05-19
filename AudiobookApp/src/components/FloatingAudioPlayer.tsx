@@ -112,11 +112,24 @@ const FloatingAudioPlayer = ({
   // Add a helper to check if a sound is valid
   const isValidSound = async (sound: Audio.Sound): Promise<boolean> => {
     try {
-      // Try to get the status to verify the sound is still loaded
       const status = await sound.getStatusAsync();
       return status.isLoaded;
     } catch (err) {
-      console.warn('Error checking sound validity:', err);
+      console.warn('Sound validation error:', err);
+      return false;
+    }
+  };
+
+  const handleAudioSeekingErrors = async (sound: Audio.Sound, operation: string): Promise<boolean> => {
+    try {
+      const status = await sound.getStatusAsync();
+      if (!status.isLoaded) {
+        console.warn(`Cannot perform ${operation} on unloaded audio`);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn(`Audio validation error before ${operation}:`, err);
       return false;
     }
   };
@@ -130,11 +143,15 @@ const FloatingAudioPlayer = ({
     }
     
     try {
-      // Unload current sound if exists
+      // Safe cleanup of current sound
       if (currentSound.current) {
-        // Remove the playback status update handler first
-        currentSound.current.setOnPlaybackStatusUpdate(null);
-        await currentSound.current.unloadAsync();
+        try {
+          // Remove handler first to prevent callback issues
+          currentSound.current.setOnPlaybackStatusUpdate(null);
+          await currentSound.current.unloadAsync().catch(() => {});
+        } catch (err) {
+          console.warn('Error unloading current sound, continuing:', err);
+        }
         currentSound.current = null;
       }
       
@@ -142,114 +159,163 @@ const FloatingAudioPlayer = ({
       setError(null); // Clear any previous errors
       
       const cacheKey = getCacheKey(text, selectedVoice);
-      console.log(`loadAudioForText: Looking for cached audio at index ${index}, key: ${cacheKey.substring(0, 30)}...`);
+      console.log(`loadAudioForText: Looking for cached audio at index ${index}`);
       
       // Check if audio is in cache
       if (audioCacheRef.current[cacheKey]) {
         try {
-          console.log(`CACHE HIT: Testing cached audio for paragraph ${index}`);
+          console.log(`Testing cached audio for paragraph ${index}`);
           const sound = audioCacheRef.current[cacheKey];
           
-          // Verify the sound is still valid
-          if (await isValidSound(sound)) {
-            console.log(`Cached audio for paragraph ${index} is valid, using it`);
+          // Basic validation before proceeding
+          const status = await sound.getStatusAsync().catch(() => ({ isLoaded: false }));
+          if (status.isLoaded) {
+            console.log(`Cached audio for paragraph ${index} is valid`);
             currentSound.current = sound;
             
-            // Reset position and set playback status update
-            await currentSound.current.setPositionAsync(0);
-            await currentSound.current.setRateAsync(playbackSpeed, true);
-            // Set the playback status update handler
-            currentSound.current.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
-            return true;
+            // Safer approach for initializing audio
+            try {
+              await sound.setPositionAsync(0).catch(e => {
+                console.warn(`Position reset failed: ${e}`);
+                throw e;
+              });
+              
+              await sound.setRateAsync(playbackSpeed, true).catch(e => {
+                console.warn(`Rate setting failed: ${e}`);
+                throw e;
+              });
+              
+              // Set status handler after other operations succeeded
+              sound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+              return true;
+            } catch (err) {
+              console.warn(`Error initializing cached sound: ${err}`);
+              delete audioCacheRef.current[cacheKey];
+              // Will continue to API loading path
+            }
           } else {
-            console.warn(`Cached audio for paragraph ${index} is invalid, will reload`);
+            console.warn(`Cached audio for paragraph ${index} is not loaded`);
             delete audioCacheRef.current[cacheKey];
           }
         } catch (err) {
-          console.warn(`Error reusing cached audio, will reload from API:`, err);
-          // If there's an error with cached audio, delete it and try loading fresh
+          console.warn(`Error accessing cached audio: ${err}`);
           delete audioCacheRef.current[cacheKey];
         }
-      } else {
-        console.log(`CACHE MISS: No cached audio found for paragraph ${index}`);
       }
       
-      // Check if we're already loading this audio to prevent duplicate API calls
+      // Check if already loading
       const inProgressKey = `loading:${cacheKey}`;
       if (loadingTrackerRef.current[inProgressKey]) {
         console.log(`Audio ${cacheKey} is already being loaded, waiting...`);
         
-        // Wait for the existing load to complete
-        await new Promise(resolve => {
-          const checkInterval = setInterval(() => {
-            if (!loadingTrackerRef.current[inProgressKey]) {
-              clearInterval(checkInterval);
-              resolve(true);
+        try {
+          // Wait with timeout
+          await Promise.race([
+            new Promise<void>(resolve => {
+              const checkInterval = setInterval(() => {
+                if (!loadingTrackerRef.current[inProgressKey]) {
+                  clearInterval(checkInterval);
+                  resolve();
+                }
+              }, 100);
+            }),
+            new Promise<void>((_, reject) => 
+              setTimeout(() => reject(new Error('Waiting for audio load timed out')), 3000)
+            )
+          ]);
+          
+          // Check if now available after waiting
+          if (audioCacheRef.current[cacheKey]) {
+            const sound = audioCacheRef.current[cacheKey];
+            const status = await sound.getStatusAsync().catch(() => ({ isLoaded: false }));
+            
+            if (status.isLoaded) {
+              currentSound.current = sound;
+              await sound.setPositionAsync(0).catch(() => {});
+              await sound.setRateAsync(playbackSpeed, true).catch(() => {});
+              sound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+              return true;
+            } else {
+              delete audioCacheRef.current[cacheKey];
             }
-          }, 100);
-        });
-        
-        // If the audio is now in cache, use it
-        if (audioCacheRef.current[cacheKey]) {
-          console.log(`Using newly cached audio for ${cacheKey}`);
-          currentSound.current = audioCacheRef.current[cacheKey];
-          await currentSound.current.setPositionAsync(0);
-          await currentSound.current.setRateAsync(playbackSpeed, true);
-          currentSound.current.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
-          return true;
+          }
+        } catch (err) {
+          console.warn(`Error waiting for in-progress audio: ${err}`);
+          // Continue to load directly
         }
       }
       
-      // Mark this audio as loading to prevent duplicate calls
+      // Mark as loading and ensure we clear this flag in finally block
       loadingTrackerRef.current[inProgressKey] = true;
       
       try {
-        // Load from API with timeout
+        // Load from API with better error handling
         const url = getTtsStreamUrl(text, selectedVoice);
-        console.log(`API CALL: Fetching audio from URL: ${url}`);
+        console.log(`Fetching audio from URL for paragraph ${index}`);
         
         // Create a timeout promise
         const timeoutPromise = new Promise((_, reject) => {
           setTimeout(() => reject(new Error('Audio loading timeout')), 10000);
         });
         
-        const loadPromise = Audio.Sound.createAsync(
-          { 
-            uri: url,
-            headers: {
-              'Accept': 'audio/mp3',
-              'Cache-Control': 'no-cache' 
-            }
-          },
-          { shouldPlay: false }
-        );
+        // Safer loading with explicit error handling
+        let sound: Audio.Sound | null = null;
+        try {
+          const result = await Promise.race([
+            Audio.Sound.createAsync(
+              { 
+                uri: url,
+                headers: {
+                  'Accept': 'audio/mp3',
+                  'Cache-Control': 'no-cache' 
+                }
+              },
+              { shouldPlay: false }
+            ),
+            timeoutPromise
+          ]) as { sound: Audio.Sound };
+          
+          sound = result.sound;
+        } catch (loadErr: any) {
+          console.error(`Error creating sound object: ${loadErr}`);
+          throw new Error(`Failed to load audio: ${loadErr.message || 'Unknown error'}`);
+        }
         
-        // Race between loading and timeout
-        const { sound } = await Promise.race([
-          loadPromise,
-          timeoutPromise
-        ]) as { sound: Audio.Sound };
+        if (!sound) {
+          throw new Error('Sound creation failed');
+        }
         
-        await sound.setRateAsync(playbackSpeed, true);
+        // Configure sound
+        try {
+          await sound.setRateAsync(playbackSpeed, true);
+          sound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+        } catch (configErr) {
+          console.warn(`Error configuring sound: ${configErr}`);
+          // Continue anyway, these aren't critical failures
+        }
         
-        // Set the playback status update handler
-        sound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
-        
-        // Cache the sound
+        // Store in cache and current reference
         audioCacheRef.current[cacheKey] = sound;
         currentSound.current = sound;
         
-        console.log(`Successfully loaded and cached audio for paragraph ${index}`);
-        logCacheStatus('After loading audio');
+        console.log(`Successfully loaded audio for paragraph ${index}`);
         
-        setError(null);
         return true;
       } finally {
-        // Clear the loading flag
+        // Always clear loading flag
         loadingTrackerRef.current[inProgressKey] = false;
       }
-    } catch (err) {
-      console.error(`Error loading audio for text at index ${index}:`, err);
+    } catch (err: any) {
+      console.error(`Error loading audio for paragraph ${index}:`, err);
+      
+      // More specific error messages
+      if (err.code === 'E_AV_SEEKING') {
+        setError('Audio seeking error. Please try again.');
+      } else if (err.message && err.message.includes('timeout')) {
+        setError('Audio loading timed out. Please check your connection.');
+      } else {
+        setError('Failed to load audio. Please try again.');
+      }
       
       // Try to retry loading a few times before giving up
       if (retryCount < 2) {
@@ -259,7 +325,6 @@ const FloatingAudioPlayer = ({
         return loadAudioForText(text, index, retryCount + 1);
       }
       
-      setError('Failed to play next paragraph');
       return false;
     } finally {
       setLoading(false);
@@ -694,13 +759,60 @@ const FloatingAudioPlayer = ({
   };
 
   const handleRetry = async () => {
+    setError(null); // Clear error when retrying
+    
     if (initialParagraphIndex >= 0 && initialParagraphIndex < paragraphs.length) {
       const text = paragraphs[initialParagraphIndex];
       console.log(`Manually retrying audio load for paragraph ${initialParagraphIndex}`);
       
-      const success = await loadAudioForText(text, initialParagraphIndex);
-      if (success && currentSound.current && isPlaying) {
-        await currentSound.current.playAsync();
+      // Reset transition state in case we got stuck
+      isTransitioning.current = false;
+      
+      // Clear all caches for this text to force a fresh load
+      const cacheKey = getCacheKey(text, selectedVoice);
+      
+      try {
+        // Clean up any existing audio objects for current paragraph
+        if (audioCacheRef.current[cacheKey]) {
+          const existingSound = audioCacheRef.current[cacheKey];
+          existingSound.setOnPlaybackStatusUpdate(null);
+          await existingSound.unloadAsync().catch(() => {});
+          delete audioCacheRef.current[cacheKey];
+        }
+        
+        // Clear any in-progress flags
+        const inProgressKey = `loading:${cacheKey}`;
+        loadingTrackerRef.current[inProgressKey] = false;
+        
+        // Force a completely fresh load
+        if (currentSound.current) {
+          currentSound.current.setOnPlaybackStatusUpdate(null);
+          await currentSound.current.unloadAsync().catch(() => {});
+          currentSound.current = null;
+        }
+        
+        setLoading(true);
+        const success = await loadAudioForText(text, initialParagraphIndex);
+        
+        if (success && currentSound.current) {
+          try {
+            // Only play if we were previously playing
+            if (isPlaying) {
+              await (currentSound.current as Audio.Sound).playAsync().catch((playErr: any) => {
+                console.warn(`Error playing after retry: ${playErr}`);
+                // If play fails, at least we loaded the audio successfully
+              });
+            }
+          } catch (err) {
+            console.error('Error playing audio after retry:', err);
+            setError('Audio loaded but failed to play. Try again.');
+          }
+        }
+      } catch (err) {
+        console.error('Error during retry operation:', err);
+        setError('Retry failed. Please try again.');
+      } finally {
+        setLoading(false);
       }
     }
   };
@@ -711,133 +823,131 @@ const FloatingAudioPlayer = ({
       return;
     }
     
-    const nextIndex = initialParagraphIndex + 1;
-    if (nextIndex >= paragraphs.length) {
-      setIsPlaying(false);
-      return;
-    }
-    
-    // Check if the next paragraph has valid text
-    const nextText = paragraphs[nextIndex];
-    if (!nextText || nextText.trim().length === 0) {
-      console.warn(`Cannot transition to paragraph ${nextIndex}: empty or invalid text`);
-      setError('Cannot play next paragraph: empty text');
-      return;
-    }
-    
-    isTransitioning.current = true;
-    console.log(`Transitioning from paragraph ${initialParagraphIndex} to ${nextIndex}`);
-    logCacheStatus('Before transition');
-    
     try {
-      // Stop current audio first
-      if (currentSound.current) {
-        await currentSound.current.stopAsync();
-        // Remove the playback status update handler to prevent recursion
-        currentSound.current.setOnPlaybackStatusUpdate(null);
+      const nextIndex = initialParagraphIndex + 1;
+      if (nextIndex >= paragraphs.length) {
+        setIsPlaying(false);
+        return;
       }
       
-      // First update the parent's index by calling the setter directly
-      setActiveParagraphIndex(nextIndex);
+      // Check if the next paragraph has valid text
+      const nextText = paragraphs[nextIndex];
+      if (!nextText || nextText.trim().length === 0) {
+        console.warn(`Cannot transition to paragraph ${nextIndex}: empty or invalid text`);
+        setError('Cannot play next paragraph: empty text');
+        return;
+      }
       
-      // Then notify parent about completion
-      onParagraphComplete(nextIndex);
+      isTransitioning.current = true;
+      console.log(`Transitioning from paragraph ${initialParagraphIndex} to ${nextIndex}`);
+      logCacheStatus('Before transition');
+      
+      // First safely stop current audio
+      if (currentSound.current) {
+        try {
+          // Remove handler first to prevent callback triggering during transition
+          currentSound.current.setOnPlaybackStatusUpdate(null);
+          await currentSound.current.stopAsync().catch(() => {});
+        } catch (stopErr) {
+          console.warn('Error stopping current audio, continuing with transition:', stopErr);
+          // Continue with transition even if stopping fails
+        }
+        
+        // Reference cleanup in case of errors
+        const oldSound = currentSound.current;
+        currentSound.current = null;
+        
+        // First update the parent's index by calling the setter directly
+        setActiveParagraphIndex(nextIndex);
+        
+        // Then notify parent about completion
+        onParagraphComplete(nextIndex);
+        
+        // Set loading state to give visual feedback
+        setLoading(true);
+        setError(null);
+      } else {
+        // No current sound, just update indices
+        setActiveParagraphIndex(nextIndex);
+        onParagraphComplete(nextIndex);
+        setLoading(true);
+        setError(null);
+      }
+      
+      // Track playback state
+      const wasPlaying = isPlaying;
       
       // Check if we already have this audio in cache
       const cacheKey = getCacheKey(nextText, selectedVoice);
-      console.log(`Looking for cache key: ${cacheKey.substring(0, 30)}...`);
       const inProgressKey = `loading:${cacheKey}`;
-      
-      // Set loading state to give visual feedback
-      setLoading(true);
-      setError(null);
-      
-      // Show immediate feedback for the transition
-      const wasPlaying = isPlaying;
       
       // If audio is already in the cache, use it directly without loading
       if (audioCacheRef.current[cacheKey]) {
-        console.log(`CACHE HIT: Testing cached audio for paragraph ${nextIndex}`);
-        
         try {
           const sound = audioCacheRef.current[cacheKey];
           
-          // Verify the sound is still valid
-          if (await isValidSound(sound)) {
+          // Verify the sound is still valid before using
+          const isValid = await isValidSound(sound);
+          if (isValid) {
             console.log(`Cached audio for paragraph ${nextIndex} is valid, using it`);
             
-            // Get from cache and prepare it
+            // Get from cache and prepare it with safe error handling
             currentSound.current = sound;
             
-            // Reset position and update handlers
-            await currentSound.current.setPositionAsync(0);
-            await currentSound.current.setRateAsync(playbackSpeed, true);
-            currentSound.current.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
-            
-            // Play it if we were playing before
-            if (wasPlaying) {
-              await currentSound.current.playAsync();
+            try {
+              // Use safe error handling for audio seeking operations
+              await currentSound.current.setPositionAsync(0)
+                .catch(err => {
+                  console.warn(`Error seeking position: ${err}`);
+                  throw err;
+                });
+                
+              await currentSound.current.setRateAsync(playbackSpeed, true)
+                .catch(err => {
+                  console.warn(`Error setting playback rate: ${err}`);
+                  throw err;
+                });
+                
+              currentSound.current.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+              
+              // Play it if we were playing before
+              if (wasPlaying) {
+                await currentSound.current.playAsync()
+                  .catch(err => {
+                    console.warn(`Error playing audio: ${err}`);
+                    throw err;
+                  });
+              }
+              
+              setLoading(false);
+              
+              // Try to preload next paragraphs 
+              setTimeout(() => {
+                preloadNextParagraph();
+              }, 300);
+              
+              return;
+              
+            } catch (seekErr) {
+              // If seeking/playing fails, remove from cache and try API load
+              console.warn(`Audio operation failed for paragraph ${nextIndex}, will reload:`, seekErr);
+              delete audioCacheRef.current[cacheKey];
+              currentSound.current = null;
             }
-            
-            setLoading(false);
-            
-            // Try to preload next paragraphs 
-            setTimeout(() => {
-              preloadNextParagraph();
-            }, 300);
-            
-            return;
           } else {
             console.warn(`Cached audio for paragraph ${nextIndex} is invalid, will reload`);
             delete audioCacheRef.current[cacheKey];
           }
         } catch (err) {
           console.warn(`Error using cached audio for paragraph ${nextIndex}:`, err);
-          // If there's an error with cached audio, we'll fall back to loading from API
           delete audioCacheRef.current[cacheKey];
         }
-      } else {
-        console.log(`CACHE MISS: No cached audio found for paragraph ${nextIndex}`);
       }
       
-      // If audio is currently being loaded, wait for it instead of making a new request
-      if (loadingTrackerRef.current[inProgressKey]) {
-        console.log(`Audio for paragraph ${nextIndex} is already loading, waiting for it...`);
-        
-        await new Promise<void>((resolve) => {
-          const checkInterval = setInterval(() => {
-            if (!loadingTrackerRef.current[inProgressKey]) {
-              clearInterval(checkInterval);
-              resolve();
-            }
-          }, 100);
-          
-          // Set a timeout to prevent indefinite waiting
-          setTimeout(() => {
-            clearInterval(checkInterval);
-            resolve();
-          }, 5000);
-        });
-        
-        // Check if it's now available in cache
-        if (audioCacheRef.current[cacheKey]) {
-          console.log(`Using newly loaded audio for paragraph ${nextIndex}`);
-          currentSound.current = audioCacheRef.current[cacheKey];
-          await currentSound.current.setPositionAsync(0);
-          await currentSound.current.setRateAsync(playbackSpeed, true);
-          currentSound.current.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
-          
-          if (wasPlaying) {
-            await currentSound.current.playAsync();
-          }
-          
-          setLoading(false);
-          return;
-        }
-      }
+      // Rest of the function continues as before, attempting API load...
+      // Instead of directly handling waiting logic here, let's simplify by using loadAudioForText
       
-      // If we reach here, we need to load the audio from the API
-      console.log(`API CALL: Loading audio for paragraph ${nextIndex} from API`);
+      console.log(`Loading audio for paragraph ${nextIndex} from API`);
       const success = await loadAudioForText(nextText, nextIndex);
       
       // Play it if we were playing before and loading was successful
@@ -851,14 +961,17 @@ const FloatingAudioPlayer = ({
       }
       
       logCacheStatus('After transition');
+      
     } catch (err) {
       console.error('Error transitioning to next paragraph:', err);
-      setError('Failed to play next paragraph');
+      setError('Failed to play next paragraph. Please try again.');
     } finally {
       setLoading(false);
+      
+      // Ensure transition flag gets cleared even if errors occur
       setTimeout(() => {
         isTransitioning.current = false;
-      }, 500); // Add a small delay before allowing another transition
+      }, 500);
     }
   };
 
@@ -970,6 +1083,67 @@ const FloatingAudioPlayer = ({
       </Modal>
     );
   };
+
+  // Add a failsafe mechanism at the component level
+  useEffect(() => {
+    // Create a periodic check for stuck transitions
+    let stuckTransitionTimer: NodeJS.Timeout;
+    
+    const checkForStuckTransitions = () => {
+      // If we've been in a transition state for too long (5+ seconds), reset it
+      if (isTransitioning.current) {
+        console.log('Detected potential stuck transition, checking status...');
+        
+        // Get the timestamp from a ref if it exists, or add one
+        const transitionStartTime = (isTransitioning as any).startTime || Date.now();
+        const transitionDuration = Date.now() - transitionStartTime;
+        
+        // If stuck for more than 5 seconds, force reset
+        if (transitionDuration > 5000) {
+          console.warn(`Transition appears stuck for ${transitionDuration}ms, resetting state`);
+          isTransitioning.current = false;
+          setLoading(false);
+          setError('Playback stopped. Please try again.');
+        }
+      }
+    };
+    
+    // Run check every 2 seconds
+    stuckTransitionTimer = setInterval(checkForStuckTransitions, 2000);
+    
+    return () => {
+      clearInterval(stuckTransitionTimer);
+    };
+  }, []);
+  
+  // Track when transition starts for timeout detection
+  useEffect(() => {
+    // When setting isTransitioning.current to true, also set a timestamp
+    let originalValue = isTransitioning.current;
+    
+    // Override with getter/setter to track transition start time
+    Object.defineProperty(isTransitioning, 'current', {
+      get: function() {
+        return originalValue;
+      },
+      set: function(value) {
+        // When setting to true, record the start time
+        if (value === true && originalValue === false) {
+          (this as any).startTime = Date.now();
+        }
+        // When setting to false, clear the timer
+        if (value === false) {
+          (this as any).startTime = undefined;
+        }
+        originalValue = value;
+      }
+    });
+    
+    // Cleanup on component unmount
+    return () => {
+      isTransitioning.current = false;
+    };
+  }, []);
 
   if (!isVisible) return null;
 

@@ -72,6 +72,17 @@ const AudioPlayerScreen = () => {
   // Helper to generate a cache key based on text and voice
   const getCacheKey = (text: string, voice: string) => `${voice}:${text}`;
   
+  // Add a helper to validate sounds before seeking operations
+  const validateSoundBeforeSeeking = async (sound: Audio.Sound, operation: string): Promise<boolean> => {
+    try {
+      const status = await sound.getStatusAsync();
+      return status.isLoaded;
+    } catch (err: any) {
+      console.warn(`Sound validation error before ${operation}:`, err);
+      return false;
+    }
+  };
+
   const loadAudioParagraph = async (index: number) => {
     if(index >= paragraphs.length || !paragraphs[index]) return;
     // if(paragraphAudios[index]?.audio) return;
@@ -87,31 +98,42 @@ const AudioPlayerScreen = () => {
       
       // Reset the sound position
       try {
-        await cachedSound.setPositionAsync(0);
-        await cachedSound.setRateAsync(playbackSpeed, true);
-        
-        if (index === currentParagraphIndex) {
-          cachedSound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+        // Validate sound before seeking
+        if (await validateSoundBeforeSeeking(cachedSound, 'setPositionAsync')) {
+          await cachedSound.setPositionAsync(0);
+          await cachedSound.setRateAsync(playbackSpeed, true);
+          
+          if (index === currentParagraphIndex) {
+            cachedSound.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+          }
+          
+          // Update the paragraphAudios state with the cached sound
+          setParagraphAudios(prev => {
+            const updated = [...prev];
+            updated[index] = { 
+              ...updated[index], 
+              audio: cachedSound,
+              voiceId: selectedVoice
+            };
+            return updated;
+          });
+          
+          if (index === currentParagraphIndex) {
+            setLoading(false);
+          }
+          
+          return cachedSound;
+        } else {
+          // If sound validation fails, delete from cache and reload
+          console.warn(`Cached sound for paragraph ${index} failed validation, will reload`);
+          delete audioCacheRef.current[cacheKey];
         }
-        
-        // Update the paragraphAudios state with the cached sound
-        setParagraphAudios(prev => {
-          const updated = [...prev];
-          updated[index] = { 
-            ...updated[index], 
-            audio: cachedSound,
-            voiceId: selectedVoice
-          };
-          return updated;
-        });
-        
-        if (index === currentParagraphIndex) {
-          setLoading(false);
-        }
-        
-        return cachedSound;
-      } catch (err) {
+      } catch (err: any) {
         console.error(`Error reusing cached audio for paragraph ${index}:`, err);
+        // Check specifically for seeking errors
+        if (err.code === 'E_AV_SEEKING') {
+          console.log('Handling E_AV_SEEKING error by removing from cache');
+        }
         // If there's an error with the cached sound, delete it from cache and continue to load fresh
         delete audioCacheRef.current[cacheKey];
       }
@@ -225,7 +247,7 @@ const AudioPlayerScreen = () => {
         try {
           await currentAudio.stopAsync();
           // Don't unload, just stop since we're caching
-        } catch (err) {
+        } catch (err: any) {
           console.warn(`Error stopping current audio: ${err}`);
           // Continue with transition even if there's an error with stopping
         }
@@ -257,15 +279,34 @@ const AudioPlayerScreen = () => {
       
       if (nextAudio) {
         try {
-          // Set up the playback status handler for the new audio
-          nextAudio.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
-          
-          // Play the audio
-          await nextAudio.playAsync();
-          setIsPlaying(true);
-        } catch (playErr) {
+          // Validate sound before playing
+          if (await validateSoundBeforeSeeking(nextAudio, 'playback')) {
+            // Set up the playback status handler for the new audio
+            nextAudio.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+            
+            // Play the audio
+            await nextAudio.playAsync();
+            setIsPlaying(true);
+          } else {
+            console.warn(`Next audio for paragraph ${nextIndex} is not valid, reloading`);
+            await loadAudioParagraph(nextIndex);
+            // Try playing again with the newly loaded audio
+            const reloadedAudio = paragraphAudios[nextIndex]?.audio;
+            if (reloadedAudio) {
+              reloadedAudio.setOnPlaybackStatusUpdate(onPlaybackStatusUpdate);
+              await reloadedAudio.playAsync();
+              setIsPlaying(true);
+            } else {
+              throw new Error('Failed to load valid audio after retry');
+            }
+          }
+        } catch (playErr: any) {
           console.error('Error playing next audio:', playErr);
-          throw new Error('Failed to play next paragraph audio');
+          if (playErr.code === 'E_AV_SEEKING') {
+            setError('Audio seeking error. Please try again.');
+          } else {
+            throw new Error('Failed to play next paragraph audio');
+          }
         }
         
         // Preload the next paragraph in the background
@@ -278,9 +319,13 @@ const AudioPlayerScreen = () => {
       } else {
         throw new Error('Failed to load next paragraph audio');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error transitioning to next paragraph:', err);
-      setError('Failed to transition to next paragraph. Please try again.');
+      if (err.code === 'E_AV_SEEKING') {
+        setError('Failed to transition to next paragraph. Audio seeking error.');
+      } else {
+        setError('Failed to transition to next paragraph. Please try again.');
+      }
     } finally {
       setIsTransitioning(false);
       transitioningRef.current = false;
@@ -382,15 +427,30 @@ const AudioPlayerScreen = () => {
     }
 
     try {
-      if (isPlaying) {
-        await currentAudio.pauseAsync();
+      // Validate sound before action
+      if (await validateSoundBeforeSeeking(currentAudio, 'play/pause')) {
+        if (isPlaying) {
+          await currentAudio.pauseAsync();
+        } else {
+          await currentAudio.playAsync();
+        }
+        setIsPlaying(!isPlaying);
       } else {
-        await currentAudio.playAsync();
+        console.warn('Current audio is invalid, will reload');
+        // Reload the audio
+        await loadAudioParagraph(currentParagraphIndex);
       }
-      setIsPlaying(!isPlaying);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error playing/pausing audio:', err);
-      setError('Failed to play audio. Please try again.');
+      if (err.code === 'E_AV_SEEKING') {
+        setError('Audio seeking error. Please try again.');
+        // Try to reload the audio
+        const cacheKey = getCacheKey(paragraphs[currentParagraphIndex], selectedVoice);
+        delete audioCacheRef.current[cacheKey];
+        await loadAudioParagraph(currentParagraphIndex);
+      } else {
+        setError('Failed to play audio. Please try again.');
+      }
     }
   };
 
@@ -403,12 +463,27 @@ const AudioPlayerScreen = () => {
     }
 
     try {
-      await currentAudio.stopAsync();
-      await currentAudio.playFromPositionAsync(0);
-      setIsPlaying(true);
-    } catch (err) {
+      // Validate sound before seeking
+      if (await validateSoundBeforeSeeking(currentAudio, 'restart')) {
+        await currentAudio.stopAsync();
+        await currentAudio.playFromPositionAsync(0);
+        setIsPlaying(true);
+      } else {
+        console.warn('Current audio is invalid, will reload');
+        // Reload the audio
+        await loadAudioParagraph(currentParagraphIndex);
+      }
+    } catch (err: any) {
       console.error('Error restarting audio:', err);
-      setError('Failed to restart audio. Please try again.');
+      if (err.code === 'E_AV_SEEKING') {
+        setError('Audio seeking error. Please try again.');
+        // Try to reload the audio
+        const cacheKey = getCacheKey(paragraphs[currentParagraphIndex], selectedVoice);
+        delete audioCacheRef.current[cacheKey];
+        await loadAudioParagraph(currentParagraphIndex);
+      } else {
+        setError('Failed to restart audio. Please try again.');
+      }
     }
   };
 
@@ -425,9 +500,16 @@ const AudioPlayerScreen = () => {
     paragraphAudios.forEach(async (item) => {
       if (item.audio) {
         try {
-          await item.audio.setRateAsync(speed, true);
-        } catch (err) {
+          if (await validateSoundBeforeSeeking(item.audio, 'setRate')) {
+            await item.audio.setRateAsync(speed, true);
+          }
+        } catch (err: any) {
           console.error(`Error changing playback speed for paragraph ${item.index}:`, err);
+          // If there's a seeking error, remove it from cache
+          if (err.code === 'E_AV_SEEKING' && item.index !== undefined) {
+            const cacheKey = getCacheKey(paragraphs[item.index], selectedVoice);
+            delete audioCacheRef.current[cacheKey];
+          }
         }
       }
     });
@@ -441,6 +523,7 @@ const AudioPlayerScreen = () => {
         !transitioningRef.current) {
       
       transitioningRef.current = true;
+      setError(null); // Clear any previous errors
       await transitionToNextParagraph();
     }
   };
