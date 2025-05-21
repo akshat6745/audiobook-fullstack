@@ -1,5 +1,6 @@
 import ky from 'ky';
 import { API_URL, DEFAULT_VOICE } from '../utils/config';
+import { Chapter, PaginatedChapters } from '../types';
 
 // Define interface types for API responses
 interface Novel {
@@ -9,14 +10,21 @@ interface Novel {
   coverImage?: string;
 }
 
-interface Chapter {
-  id: string;
-  title: string;
-  number: number;
-}
-
 interface ChapterContent {
   content: string;
+}
+
+// API response interfaces
+interface ChapterResponse {
+  chapterNumber: number;
+  chapterTitle: string;
+  link: string;
+}
+
+interface PaginatedChaptersResponse {
+  chapters: ChapterResponse[];
+  total_pages: number;
+  current_page: number;
 }
 
 // Add a counter to track TTS API calls
@@ -95,10 +103,24 @@ export const fetchNovels = async () => {
   }
 };
 
-export const fetchChapters = async (novelName: string) => {
+export const fetchChapters = async (novelName: string, page: number = 1): Promise<PaginatedChapters> => {
   try {
-    const response = await api.get(`chapters/${novelName}`).json<Chapter[]>();
-    return response;
+    const response = await api.get(`chapters-with-pages/${novelName}`, {
+      searchParams: { page }
+    }).json<PaginatedChaptersResponse>();
+    
+    // Map to the expected format
+    const mappedChapters = response.chapters.map(chapter => ({
+      chapterNumber: chapter.chapterNumber,
+      chapterTitle: chapter.chapterTitle,
+      link: chapter.link
+    }));
+    
+    return {
+      chapters: mappedChapters,
+      totalPages: response.total_pages,
+      currentPage: response.current_page
+    };
   } catch (error) {
     console.error(`Error fetching chapters for ${novelName}:`, error);
     throw error;
