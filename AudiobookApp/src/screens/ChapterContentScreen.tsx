@@ -2,12 +2,14 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { fetchChapterContent, fetchChapters } from '../services/api';
+import { fetchChapterContent, fetchChapters, logTtsMetrics } from '../services/api';
 import { RootStackParamList, Chapter } from '../types';
 import Loading from '../components/Loading';
 import ErrorDisplay from '../components/ErrorDisplay';
 import FloatingAudioPlayer from '../components/FloatingAudioPlayer';
+import ApiMonitor from '../components/ApiMonitor';
 import { DEFAULT_VOICE } from '../utils/config';
+import { Ionicons } from '@expo/vector-icons';
 
 type ChapterContentScreenRouteProp = RouteProp<RootStackParamList, 'ChapterContent'>;
 type ChapterContentScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'ChapterContent'>;
@@ -23,13 +25,14 @@ const ChapterContentScreen = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAudioPlayer, setShowAudioPlayer] = useState(false);
-  const [activeParagraphIndex, setActiveParagraphIndex] = useState(-1);
+  const [activeParagraphIndex, setActiveParagraphIndex] = useState(0);
   const [availableChapters, setAvailableChapters] = useState<Chapter[]>([]);
   const [loadingNextChapter, setLoadingNextChapter] = useState(false);
   const [audioSettings, setAudioSettings] = useState<AudioSettings>({
     voice: DEFAULT_VOICE,
     playbackSpeed: 1
   });
+  const [showApiMonitor, setShowApiMonitor] = useState(false);
   
   // Use ref to track last active paragraph index to prevent unnecessary scrolling
   const lastActiveIndexRef = useRef(-1);
@@ -44,15 +47,23 @@ const ChapterContentScreen = () => {
       setLoading(true);
       const content = await fetchChapterContent(novel, chapter);
       
-      // Filter out empty paragraphs
-      const filteredContent = content.filter((para: string) => 
-        para && para.trim().length > 0
-      );
+      // Parse content properly - ensure it's an array before filtering
+      let paragraphArray: string[] = [];
+      if (typeof content === 'string') {
+        // If content is a string, split it into paragraphs
+        paragraphArray = content.split('\n\n').filter(para => para.trim().length > 0);
+      } else if (Array.isArray(content)) {
+        // If content is already an array, use type assertion and filter
+        paragraphArray = (content as any[]).filter((para: any) => {
+          // Ensure each item is a string and not empty
+          return typeof para === 'string' && para.trim().length > 0;
+        });
+      }
       
-      if (filteredContent.length === 0) {
+      if (paragraphArray.length === 0) {
         setError('No readable content found in this chapter.');
       } else {
-        setParagraphs(filteredContent);
+        setParagraphs(paragraphArray);
         setError(null);
       }
     } catch (err) {
@@ -66,11 +77,14 @@ const ChapterContentScreen = () => {
   const loadAllChapters = async () => {
     try {
       const chapters = await fetchChapters(novelName);
-      setAvailableChapters(chapters);
-      return chapters;
+      
+      // Type assertion to ensure the chapters match the expected type
+      const typedChapters = chapters as unknown as typeof availableChapters;
+      setAvailableChapters(typedChapters);
+      return typedChapters;
     } catch (err) {
       console.error('Error loading all chapters:', err);
-      return [];
+      return [] as typeof availableChapters;
     }
   };
 
@@ -183,12 +197,18 @@ const ChapterContentScreen = () => {
         // Load the content of the next chapter
         const nextContent = await fetchChapterContent(novelName, nextChapter.chapterNumber);
         
-        // Filter out empty paragraphs
-        const filteredNextContent = nextContent.filter((para: string) => 
-          para && para.trim().length > 0
-        );
+        // Parse content properly
+        let nextParagraphs: string[] = [];
+        if (typeof nextContent === 'string') {
+          nextParagraphs = nextContent.split('\n\n').filter(para => para.trim().length > 0);
+        } else if (Array.isArray(nextContent)) {
+          // Use type assertion for array filtering
+          nextParagraphs = (nextContent as any[]).filter((para: any) => {
+            return typeof para === 'string' && para.trim().length > 0;
+          });
+        }
         
-        if (filteredNextContent.length === 0) {
+        if (nextParagraphs.length === 0) {
           console.warn('Next chapter has no readable content');
           return;
         }
@@ -203,7 +223,7 @@ const ChapterContentScreen = () => {
         });
         
         // Update state with new chapter content
-        setParagraphs(filteredNextContent);
+        setParagraphs(nextParagraphs);
         
         // Reset isPlaying state to ensure it's set to play mode
         const wasPlaying = true; // Always assume we want to continue playing
@@ -255,6 +275,22 @@ const ChapterContentScreen = () => {
       playbackSpeed: speed
     }));
   }, []);
+
+  // Add a function to show the API monitor
+  const handleShowApiMonitor = () => {
+    // Log metrics to console
+    logTtsMetrics();
+    // Show the monitor UI
+    setShowApiMonitor(true);
+  };
+
+  // Add function to handle play button press
+  const handlePlay = () => {
+    if (paragraphs.length > 0) {
+      setActiveParagraphIndex(0);
+      setShowAudioPlayer(true);
+    }
+  };
 
   if (loading) {
     return <Loading message="Loading chapter content..." />;
@@ -341,6 +377,31 @@ const ChapterContentScreen = () => {
         playbackSpeed={audioSettings.playbackSpeed}
         onSpeedChange={handleSpeedChange}
       />
+
+      {/* Use absolute positioning for buttons */}
+      {!showAudioPlayer && (
+        <TouchableOpacity 
+          style={styles.floatingButton} 
+          onPress={handlePlay}
+        >
+          <Ionicons name="play" size={24} color="#fff" />
+        </TouchableOpacity>
+      )}
+      
+      {/* Debug button */}
+      <TouchableOpacity 
+        style={styles.debugButton} 
+        onPress={handleShowApiMonitor}
+      >
+        <Ionicons name="analytics-outline" size={20} color="#fff" />
+        <Text style={styles.debugButtonText}>API Stats</Text>
+      </TouchableOpacity>
+
+      {/* API Monitor */}
+      <ApiMonitor
+        visible={showApiMonitor}
+        onClose={() => setShowApiMonitor(false)}
+      />
     </View>
   );
 };
@@ -390,6 +451,51 @@ const styles = StyleSheet.create({
   activeParagraphText: {
     color: '#006400', // Darker green for text
     fontWeight: '500',
+  },
+  footerContainer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  floatingButton: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    backgroundColor: '#007bff',
+    width: 56,
+    height: 56, 
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+    zIndex: 98,
+  },
+  debugButton: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(50,50,50,0.85)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    zIndex: 99,
+  },
+  debugButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginLeft: 4,
   },
 });
 

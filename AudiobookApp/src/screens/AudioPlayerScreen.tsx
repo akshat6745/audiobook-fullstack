@@ -141,7 +141,7 @@ const AudioPlayerScreen = () => {
     
     // If not in cache or there was an error with cached sound, load it from API
     try {
-      const url = getTtsStreamUrl(paragraph, selectedVoice);
+      const url = getTtsStreamUrl(paragraph, selectedVoice, index);
       
       console.log(`Loading audio for paragraph ${index} from: ${url}`);
       
@@ -528,6 +528,50 @@ const AudioPlayerScreen = () => {
     }
   };
 
+  const handlePreviousParagraph = async () => {
+    // Check if there's a previous paragraph and we're not already transitioning
+    if (currentParagraphIndex > 0 && !isTransitioning && !transitioningRef.current) {
+      transitioningRef.current = true;
+      setError(null); // Clear any previous errors
+      
+      // Stop current audio if playing
+      if (paragraphAudios[currentParagraphIndex]?.audio) {
+        try {
+          await paragraphAudios[currentParagraphIndex].audio?.stopAsync();
+        } catch (err) {
+          console.warn('Error stopping current audio:', err);
+          // Continue anyway
+        }
+      }
+      
+      // Set new index
+      const newIndex = currentParagraphIndex - 1;
+      setCurrentParagraphIndex(newIndex);
+      
+      // Transition to previous paragraph
+      setIsTransitioning(true);
+      
+      // Load audio if needed
+      if (!paragraphAudios[newIndex]?.audio || paragraphAudios[newIndex]?.voiceId !== selectedVoice) {
+        await loadAudioParagraph(newIndex);
+      }
+      
+      // Play the audio if we were playing before
+      if (isPlaying && paragraphAudios[newIndex]?.audio) {
+        try {
+          await paragraphAudios[newIndex].audio?.playAsync();
+        } catch (err) {
+          console.error('Error playing previous paragraph:', err);
+          setError('Failed to play previous paragraph');
+        }
+      }
+      
+      // Reset transition flags
+      setIsTransitioning(false);
+      transitioningRef.current = false;
+    }
+  };
+
   const isCurrentAudioLoading = !paragraphAudios[currentParagraphIndex]?.audio || 
                                paragraphAudios[currentParagraphIndex]?.voiceId !== selectedVoice;
 
@@ -642,31 +686,60 @@ const AudioPlayerScreen = () => {
         </View>
 
         {/* Playback Controls */}
-        <View style={styles.playerContainer}>
-          <TouchableOpacity
+        <View style={styles.playerControls}>
+          <TouchableOpacity 
+            style={[styles.controlButton, currentParagraphIndex > 0 ? {} : styles.disabledButton]}
+            onPress={handlePreviousParagraph}
+            disabled={currentParagraphIndex === 0 || loading || isTransitioning}
+            hitSlop={{top: 15, bottom: 15, left: 15, right: 15}}
+            activeOpacity={0.7}
+          >
+            <Ionicons 
+              name="arrow-back" 
+              size={24} 
+              color={currentParagraphIndex > 0 ? '#333' : '#999'} 
+            />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
             style={styles.controlButton}
             onPress={handleRestart}
+            disabled={loading || isTransitioning}
+            hitSlop={{top: 15, bottom: 15, left: 15, right: 15}}
+            activeOpacity={0.7}
           >
-            <Ionicons name="refresh" size={30} color="#333" />
+            <Ionicons name="refresh" size={24} color={(loading || isTransitioning) ? '#999' : '#333'} />
           </TouchableOpacity>
 
-          <TouchableOpacity
+          <TouchableOpacity 
             style={[styles.controlButton, styles.playButton]}
             onPress={handlePlayPause}
+            disabled={loading || isTransitioning}
+            hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+            activeOpacity={0.7}
           >
-            <Ionicons
-              name={isPlaying ? "pause" : "play"}
-              size={40}
-              color="#fff"
+            <Ionicons 
+              name={isPlaying ? "pause" : "play"} 
+              size={32} 
+              color="white" 
             />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.controlButton, paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 ? {} : styles.disabledButton]}
+          <TouchableOpacity 
+            style={[
+              styles.controlButton, 
+              paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 ? {} : styles.disabledButton
+            ]}
             onPress={handleNextParagraph}
-            disabled={!(paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1)}
+            disabled={!(paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1) || loading || isTransitioning}
+            hitSlop={{top: 15, bottom: 15, left: 15, right: 15}}
+            activeOpacity={0.7}
           >
-            <Ionicons name="arrow-forward" size={30} color={paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 ? "#333" : "#999"} />
+            <Ionicons 
+              name="arrow-forward" 
+              size={24} 
+              color={paragraphs.length > 0 && currentParagraphIndex < paragraphs.length - 1 ? "#333" : "#999"} 
+            />
           </TouchableOpacity>
         </View>
       </View>
@@ -802,21 +875,32 @@ const styles = StyleSheet.create({
     color: '#333',
     fontWeight: 'bold',
   },
-  playerContainer: {
+  playerControls: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 16,
   },
   controlButton: {
-    padding: 15,
-    borderRadius: 50,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#f0f0f0',
+    borderRadius: 50,
+    padding: 12,
     marginHorizontal: 10,
+    // Ensure minimum dimensions for iOS touch targets
+    minWidth: 44,
+    minHeight: 44,
   },
   playButton: {
+    backgroundColor: '#007bff',
+    width: 65,
+    height: 65,
+    // Ensure play button is centered properly
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  restartButton: {
     backgroundColor: '#007bff',
     width: 80,
     height: 80,

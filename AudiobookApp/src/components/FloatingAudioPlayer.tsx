@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated, Modal, Pressable } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Animated, Modal, Pressable, Platform } from 'react-native';
 import { Audio } from 'expo-av';
-import { Ionicons } from '@expo/vector-icons';
+import { FontAwesome5 } from '@expo/vector-icons';
 import { getTtsStreamUrl } from '../services/api';
 import { DEFAULT_VOICE } from '../utils/config';
 
@@ -250,7 +250,7 @@ const FloatingAudioPlayer = ({
       
       try {
         // Load from API with better error handling
-        const url = getTtsStreamUrl(text, selectedVoice);
+        const url = getTtsStreamUrl(text, selectedVoice, index);
         console.log(`Fetching audio from URL for paragraph ${index}`);
         
         // Create a timeout promise
@@ -668,7 +668,7 @@ const FloatingAudioPlayer = ({
           
           try {
             // Use a different approach for preloading to avoid conflicts with main audio
-            const url = getTtsStreamUrl(nextText, selectedVoice);
+            const url = getTtsStreamUrl(nextText, selectedVoice, nextIndex);
             
             // Use a timeout to limit how long we wait for preloading
             const timeoutPromise = new Promise((_, reject) => {
@@ -1067,6 +1067,7 @@ const FloatingAudioPlayer = ({
                     styles.selectedOption
                   ]}
                   onPress={() => onSelect(option.value)}
+                  activeOpacity={0.7}
                 >
                   <Text style={styles.optionText}>{option.label}</Text>
                 </TouchableOpacity>
@@ -1075,6 +1076,7 @@ const FloatingAudioPlayer = ({
             <TouchableOpacity
               style={styles.closeButton}
               onPress={onClose}
+              activeOpacity={0.7}
             >
               <Text style={styles.closeButtonText}>Close</Text>
             </TouchableOpacity>
@@ -1156,7 +1158,7 @@ const FloatingAudioPlayer = ({
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-          <Ionicons name="close" size={24} color="#333" />
+          <FontAwesome5 name="times" size={24} color="#333" solid />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Now Playing</Text>
       </View>
@@ -1180,11 +1182,11 @@ const FloatingAudioPlayer = ({
               setShowSpeedDropdown(false);
             }}
           >
-            <Ionicons name="person" size={18} color="#007bff" style={styles.buttonIcon} />
+            <FontAwesome5 name="user" size={18} color="#007bff" style={styles.buttonIcon} solid />
             <Text style={styles.dropdownButtonText}>
               {VOICE_OPTIONS.find(v => v.value === selectedVoice)?.label.split(' ')[0]}
             </Text>
-            <Ionicons name="chevron-down" size={18} color="#007bff" />
+            <FontAwesome5 name="chevron-down" size={18} color="#007bff" solid />
           </TouchableOpacity>
 
           {/* Speed Dropdown */}
@@ -1195,48 +1197,71 @@ const FloatingAudioPlayer = ({
               setShowVoiceDropdown(false);
             }}
           >
-            <Ionicons name="speedometer" size={18} color="#007bff" style={styles.buttonIcon} />
+            <FontAwesome5 name="tachometer-alt" size={18} color="#007bff" style={styles.buttonIcon} solid />
             <Text style={styles.dropdownButtonText}>
               {SPEED_OPTIONS.find(s => s.value === playbackSpeed)?.label}
             </Text>
-            <Ionicons name="chevron-down" size={18} color="#007bff" />
+            <FontAwesome5 name="chevron-down" size={18} color="#007bff" solid />
           </TouchableOpacity>
         </View>
 
         {/* Playback Controls */}
         <View style={styles.playerContainer}>
-          <TouchableOpacity
-            style={styles.controlButton}
+          {/* Restart Button */}
+          <TouchableOpacity 
+            style={styles.controlButton} 
             onPress={handleRestart}
+            activeOpacity={0.7}
           >
-            <Ionicons name="refresh" size={24} color="#333" />
+            <FontAwesome5 name="redo" size={28} color="#333" solid />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.controlButton, styles.playButton]}
+          {/* Play/Pause Button */}
+          <TouchableOpacity 
+            style={styles.playButton} 
             onPress={handlePlayPause}
             disabled={loading}
+            activeOpacity={0.7}
           >
-            <Ionicons
+            {/* <FontAwesome5
+              // style={{
+              //   elevation: 6,
+              //   backgroundColor: 'red',
+              //   color: 'white',
+              // }}
               name={isPlaying ? "pause" : "play"}
-              size={32}
-              color="#fff"
-            />
+              // size={30}
+              // color="#fff"
+              // solid
+            /> */}
+            <Text style={{
+              color: 'white',
+              fontSize: 16,
+              fontWeight: 'bold',
+            }}>{isPlaying ? "Pause": "Play"}</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
+          {/* Next Button */}
+          <TouchableOpacity 
             style={[
               styles.controlButton, 
               initialParagraphIndex < paragraphs.length - 1 ? {} : styles.disabledButton
-            ]}
+            ]} 
             onPress={handleNextParagraph}
             disabled={!(initialParagraphIndex < paragraphs.length - 1) || loading}
+            activeOpacity={0.7}
           >
-            <Ionicons 
-              name="arrow-forward" 
+            {/* <FontAwesome5 
+              name="step-forward" 
               size={24} 
-              color={initialParagraphIndex < paragraphs.length - 1 ? "#333" : "#999"} 
-            />
+              color={initialParagraphIndex < paragraphs.length - 1 ? "#333" : "#999"}
+              solid 
+            /> */}
+            <Text style={{
+              color: 'black',
+              fontSize: 16,
+              fontWeight: 'bold',
+            }}>Next</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1268,7 +1293,11 @@ const FloatingAudioPlayer = ({
       {error && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+          <TouchableOpacity 
+            style={styles.retryButton} 
+            onPress={handleRetry}
+            activeOpacity={0.7}
+          >
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
         </View>
@@ -1287,11 +1316,13 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 16,
+    paddingBottom: Platform.OS === 'ios' ? 30 : 16, // Add extra padding at bottom for iOS
     elevation: 5,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
+    zIndex: 999,
   },
   header: {
     flexDirection: 'row',
@@ -1310,46 +1341,75 @@ const styles = StyleSheet.create({
     padding: 5,
   },
   controlsContainer: {
-    marginTop: 10,
+    marginTop: 15,
+    marginBottom: 10,
   },
   settingsContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginBottom: 12,
+    marginBottom: 15,
   },
   dropdownButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#f0f0f0',
     borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginHorizontal: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginHorizontal: 8,
+    // Shadow for better visibility
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1.5,
+    elevation: 2,
   },
   buttonIcon: {
-    marginRight: 5,
+    marginRight: 8,
   },
   dropdownButtonText: {
     color: '#007bff',
     marginRight: 4,
+    fontSize: 16,
   },
   playerContainer: {
     flexDirection: 'row',
-    justifyContent: 'center',
+    justifyContent: 'space-around',
     alignItems: 'center',
+    marginTop: 15,
+    marginBottom: 20,
+    padding: 10,
+    marginHorizontal: 10,
   },
   controlButton: {
-    padding: 12,
-    borderRadius: 50,
+    backgroundColor: '#f0f0f0',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f0f0f0',
-    marginHorizontal: 10,
+    marginHorizontal: 20,
+    // Simple shadow
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 1},
+    shadowOpacity: 0.2,
+    shadowRadius: 1.5,
+    elevation: 2,
   },
   playButton: {
     backgroundColor: '#007bff',
-    width: 65,
-    height: 65,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 20,
+    // Enhanced shadow for play button
+    shadowColor: '#007bff',
+    shadowOffset: {width: 0, height: 3},
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 5,
   },
   disabledButton: {
     backgroundColor: '#e0e0e0',
@@ -1383,6 +1443,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     borderRadius: 8,
     marginBottom: 8,
+    ...Platform.select({
+      ios: {
+        minHeight: 44,
+      },
+    }),
   },
   selectedOption: {
     backgroundColor: '#e6f2ff',
@@ -1398,6 +1463,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#f0f0f0',
     borderRadius: 8,
     alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.2,
+        shadowRadius: 1.5,
+        minHeight: 44,
+      },
+    }),
   },
   closeButtonText: {
     fontSize: 16,
@@ -1409,7 +1483,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   errorContainer: {
-    padding: 10,
+    padding: 12,
     alignItems: 'center',
     backgroundColor: '#ffebee',
     borderRadius: 8,
@@ -1417,16 +1491,24 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: '#d32f2f',
-    marginBottom: 5,
+    marginBottom: 8,
+    fontSize: 15,
   },
   retryButton: {
-    padding: 6,
+    padding: 10,
+    paddingHorizontal: 20,
     backgroundColor: '#d32f2f',
-    borderRadius: 4,
+    borderRadius: 6,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 1},
+    shadowOpacity: 0.2,
+    shadowRadius: 1.5,
+    elevation: 2,
   },
   retryText: {
     color: 'white',
     fontWeight: 'bold',
+    fontSize: 15,
   },
   chapterStatusContainer: {
     paddingVertical: 5,
