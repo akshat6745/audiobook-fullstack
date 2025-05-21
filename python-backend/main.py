@@ -84,47 +84,6 @@ async def fetch_names():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching novels: {str(e)}")
 
-@app.get("/chapters/{novel_name}", response_model=List[Dict])
-async def fetch_chapters(novel_name: str):
-    """
-    Fetch chapters for a specific novel
-    """
-    try:
-        url = f"https://novelbin.com/ajax/chapter-archive?novelId={novel_name}"
-
-        # Try multiple times with different user agents if needed
-        for _ in range(3):
-            try:
-                async with session.get(url, headers=get_headers(), ssl=False) as response:
-                    response.raise_for_status()
-                    html = await response.text()
-
-                    soup = BeautifulSoup(html, 'html.parser')
-                    chapters = []
-
-                    for li in soup.find_all('li'):
-                        a_tag = li.find('a')
-                        if a_tag:
-                            chapter_info = {
-                                "chapterNumber": len(chapters) + 1,
-                                "chapterTitle": a_tag.text.strip(),
-                                "link": a_tag['href'] if a_tag['href'].startswith('http') else f"https://novelbin.com{a_tag['href']}"
-                            }
-                            chapters.append(chapter_info)
-
-                    if chapters:  # If we found chapters, return them
-                        return chapters
-            except Exception as e:
-                print(f"Attempt failed: {e}")
-                continue
-
-        # If we get here, all attempts failed
-        raise HTTPException(status_code=500, detail="Failed to fetch chapters after multiple attempts")
-
-    except Exception as e:
-        print(f"Error fetching chapters: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching chapters: {str(e)}")
-
 @app.get("/chapters-with-pages/{novel_name}")
 async def fetch_chapters_with_pages(novel_name: str, page: Optional[int] = 1):
     """

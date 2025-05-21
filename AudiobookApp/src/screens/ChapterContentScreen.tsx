@@ -33,6 +33,11 @@ const ChapterContentScreen = () => {
     playbackSpeed: 1
   });
   const [showApiMonitor, setShowApiMonitor] = useState(false);
+  const [parsedChapterInfo, setParsedChapterInfo] = useState<{
+    chapterNumber: number;
+    title: string;
+    publishedTime: string;
+  }>({ chapterNumber: 0, title: '', publishedTime: '' });
   
   // Use ref to track last active paragraph index to prevent unnecessary scrolling
   const lastActiveIndexRef = useRef(-1);
@@ -41,6 +46,44 @@ const ChapterContentScreen = () => {
   const navigation = useNavigation<ChapterContentScreenNavigationProp>();
   const { novelName, chapterNumber, chapterTitle } = route.params;
   const flatListRef = useRef<FlatList>(null);
+
+  // Parse the chapter title to extract number, title and published date
+  const parseChapterTitle = (rawTitle: string): { chapterNumber: number; title: string; publishedTime: string } => {
+    try {
+      // Format is typically: "91\nChapter 91 Escape\n2 years ago"
+      const parts = rawTitle.split('\n');
+      
+      if (parts.length >= 3) {
+        // First part is the chapter number, second is the actual title, third is time
+        return {
+          chapterNumber: parseInt(parts[0], 10) || chapterNumber,
+          title: parts[1].trim(),
+          publishedTime: parts[2].trim()
+        };
+      } else if (parts.length === 2) {
+        // If format is different, try to extract time from the end
+        return {
+          chapterNumber: chapterNumber,
+          title: parts[0].trim(),
+          publishedTime: parts[1].trim()
+        };
+      } else {
+        // Fallback if the format is unexpected
+        return {
+          chapterNumber: chapterNumber,
+          title: rawTitle.trim(),
+          publishedTime: ''
+        };
+      }
+    } catch (error) {
+      console.error('Error parsing chapter title:', error);
+      return {
+        chapterNumber: chapterNumber,
+        title: rawTitle || `Chapter ${chapterNumber}`,
+        publishedTime: ''
+      };
+    }
+  };
 
   const loadChapterContent = async (novel: string = novelName, chapter: number = chapterNumber) => {
     try {
@@ -89,8 +132,13 @@ const ChapterContentScreen = () => {
   };
 
   useEffect(() => {
+    // Parse the chapter title
+    const parsedInfo = parseChapterTitle(chapterTitle);
+    setParsedChapterInfo(parsedInfo);
+
+    // Set the navigation title
     navigation.setOptions({
-      title: `Chapter ${chapterNumber}`,
+      title: `Chapter ${parsedInfo.chapterNumber}`,
     });
 
     // Load current chapter content
@@ -189,10 +237,16 @@ const ChapterContentScreen = () => {
         console.log(`Loading next chapter: ${nextChapter.chapterNumber} - ${nextChapter.chapterTitle}`);
         console.log(`Preserving audio settings: Voice=${audioSettings.voice}, Speed=${audioSettings.playbackSpeed}`);
         
+        // Parse the title of the next chapter
+        const parsedNextChapterInfo = parseChapterTitle(nextChapter.chapterTitle);
+        
         // Update navigation title first to give user feedback
         navigation.setOptions({
-          title: `Chapter ${nextChapter.chapterNumber}`,
+          title: `Chapter ${parsedNextChapterInfo.chapterNumber}`,
         });
+        
+        // Update the parsed chapter info state
+        setParsedChapterInfo(parsedNextChapterInfo);
         
         // Load the content of the next chapter
         const nextContent = await fetchChapterContent(novelName, nextChapter.chapterNumber);
@@ -324,7 +378,17 @@ const ChapterContentScreen = () => {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{chapterTitle}</Text>
+      {/* Updated title display to match the format in the screenshot */}
+      <View style={styles.chapterTitleContainer}>
+        <Text style={styles.chapterTitle}>{parsedChapterInfo.title}</Text>
+        <Text style={styles.publishedTime}>{parsedChapterInfo.publishedTime}</Text>
+      </View>
+      
+      {/* Add the green chapter title card shown in the screenshot */}
+      <View style={styles.chapterTitleCard}>
+        <Text style={styles.chapterTitleCardText}>{parsedChapterInfo.title}</Text>
+      </View>
+
       {loadingNextChapter && (
         <Text style={styles.loadingNextChapter}>Loading next chapter...</Text>
       )}
@@ -415,11 +479,37 @@ const styles = StyleSheet.create({
   contentContainer: {
     paddingBottom: 100, // Add padding to ensure content is not hidden behind the audio player
   },
-  title: {
+  chapterTitleContainer: {
+    marginBottom: 16,
+  },
+  chapterNumber: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  chapterTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    marginBottom: 16,
     color: '#333',
+    marginBottom: 4,
+  },
+  publishedTime: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 16,
+  },
+  chapterTitleCard: {
+    backgroundColor: '#e6f7e6', // Light green background
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 20,
+    borderColor: '#c8e6c9',
+    borderWidth: 1,
+  },
+  chapterTitleCardText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#006400', // Dark green text
   },
   loadingNextChapter: {
     color: '#007bff',
